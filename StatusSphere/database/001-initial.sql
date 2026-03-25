@@ -48,13 +48,13 @@ CREATE INDEX idx_news_snapshot ON news_articles (snapshot_id);
 
 -- 4. AUTO CLEANUP - Delete data older than 30 days (runs daily at 3am)
 SELECT cron.schedule(
-    'cleanup-news-30days',
+    'cleanup-news-1days',
     '0 3 * * *',
-    $$DELETE FROM news_articles WHERE fetched_at < NOW() - INTERVAL '30 days'$$
+    $$DELETE FROM news_articles WHERE fetched_at < NOW() - INTERVAL '1 days'$$
 );
 
 SELECT cron.schedule(
-    'cleanup-snapshots-30days',
+    'cleanup-snapshots-1days',
     '5 3 * * *',
-    $$DELETE FROM snapshots WHERE polled_at < NOW() - INTERVAL '30 days'$$
+    $$DELETE FROM snapshots WHERE polled_at < NOW() - INTERVAL '1 days'$$
 );
