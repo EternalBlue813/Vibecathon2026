@@ -184,6 +184,12 @@ h1 {
     border: 1px solid rgba(239, 68, 68, 0.2);
 }
 
+.status-badge.unknown {
+    background: rgba(100, 116, 139, 0.15);
+    color: #64748b;
+    border: 1px solid rgba(100, 116, 139, 0.2);
+}
+
 .chart-container {
     height: 200px;
     width: 100%;
@@ -194,6 +200,7 @@ h1 {
 .stats-row {
     display: flex;
     justify-content: space-between;
+    gap: 0.75rem;
     padding-top: 1rem;
     border-top: 1px solid rgba(255, 255, 255, 0.05);
 }
@@ -202,6 +209,8 @@ h1 {
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
+    flex: 1;
+    min-width: 0;
 }
 
 .stat-label {
@@ -320,6 +329,21 @@ button.secondary {
     justify-content: space-between;
     font-size: 0.75rem;
     color: var(--text-secondary);
+}
+
+.feed-pill {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    padding: 0.1rem 0.45rem;
+    border-radius: 999px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    background: rgba(239, 68, 68, 0.16);
+    color: var(--danger-color);
+    border: 1px solid rgba(239, 68, 68, 0.22);
 }
 
 .news-source {

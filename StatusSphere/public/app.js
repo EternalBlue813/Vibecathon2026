@@ -1,32 +1,38 @@
 // Configuration
 const API_URL = '/status';
-const POLL_INTERVAL = 30000; // 30 seconds
-const MAX_HISTORY = 20; // Keep last 20 status checks (10 mins)
+const HISTORY_API = '/history';
+const POLL_INTERVAL = 120000; // 2 minutes
+const HISTORY_REFRESH_INTERVAL = 300000; // 5 minutes
+const MAX_HISTORY = 20; // Keep latest 20 points
 
 // State
 const state = {
-    aws: { history: [], currentStatus: 'Unknown', incidents: [] },
-    azure: { history: [], currentStatus: 'Unknown', incidents: [] },
-    gcp: { history: [], currentStatus: 'Unknown', incidents: [] },
-    cloudflare: { history: [], currentStatus: 'Unknown', incidents: [] },
-    akamai: { history: [], currentStatus: 'Unknown', incidents: [] },
-    fastly: { history: [], currentStatus: 'Unknown', incidents: [] }
+    aws: { history: [], currentStatus: 'Unknown', incidents: [], lastFetch: null, fromCache: false },
+    azure: { history: [], currentStatus: 'Unknown', incidents: [], lastFetch: null, fromCache: false },
+    gcp: { history: [], currentStatus: 'Unknown', incidents: [], lastFetch: null, fromCache: false },
+    cloudflare: { history: [], currentStatus: 'Unknown', incidents: [], lastFetch: null, fromCache: false },
+    akamai: { history: [], currentStatus: 'Unknown', incidents: [], lastFetch: null, fromCache: false },
+    fastly: { history: [], currentStatus: 'Unknown', incidents: [], lastFetch: null, fromCache: false }
 };
 
 // Chart Instances
 const charts = {};
 
 // Initialize
-document.addEventListener('DOMContentLoaded', () => {
-    initCharts(); // Initial fetch
+document.addEventListener('DOMContentLoaded', async () => {
+    initCharts();
+    await fetchHistory();
+    Object.keys(state).forEach(p => state[p].fromCache = false);
+    fetchData();
     setInterval(fetchData, POLL_INTERVAL);
+    setInterval(fetchHistory, HISTORY_REFRESH_INTERVAL);
+    setInterval(updateLastFetchTimers, 10000);
 });
 
 function initCharts() {
     ['aws', 'azure', 'gcp', 'cloudflare', 'akamai', 'fastly'].forEach(provider => {
         const ctx = document.getElementById(`chart-${provider}`).getContext('2d');
 
-        // Create gradient
         const gradient = ctx.createLinearGradient(0, 0, 0, 200);
         gradient.addColorStop(0, 'rgba(56, 189, 248, 0.5)');
         gradient.addColorStop(1, 'rgba(56, 189, 248, 0.0)');
@@ -37,12 +43,12 @@ function initCharts() {
                 labels: Array(MAX_HISTORY).fill(''),
                 datasets: [{
                     label: 'Status History',
-                    data: Array(MAX_HISTORY).fill(1), // Default to healthy
+                    data: Array(MAX_HISTORY).fill(1),
                     borderColor: '#38bdf8',
                     backgroundColor: gradient,
                     borderWidth: 2,
                     pointRadius: 2,
-                    stepped: true, // Stepped line for binary status
+                    stepped: true,
                     fill: true
                 }]
             },
@@ -74,6 +80,93 @@ function initCharts() {
             }
         });
     });
+}
+
+async function fetchHistory() {
+    try {
+        const response = await fetch(HISTORY_API);
+        if (!response.ok) return;
+
+        const data = await response.json();
+        let hasData = false;
+
+        for (const [provider, snapshots] of Object.entries(data)) {
+            if (state[provider] && snapshots.length > 0) {
+                const history = snapshots.map(s => s.health_score);
+                const lastSnapshot = snapshots[snapshots.length - 1];
+                const latestStatus = lastSnapshot.status || 'Unknown';
+
+                state[provider].history = history;
+                state[provider].currentStatus = latestStatus;
+                state[provider].lastFetch = new Date();
+
+                if (charts[provider]) {
+                    charts[provider].data.datasets[0].data = history;
+                    charts[provider].update();
+                }
+
+                updateProviderUI(provider, latestStatus, history[history.length - 1] ?? 1, []);
+                hasData = true;
+            }
+        }
+
+        if (hasData) {
+            console.log('[StatusSphere] Loaded history from database');
+        }
+    } catch (error) {
+        console.error('[StatusSphere] Failed to fetch history:', error);
+    }
+}
+
+function updateProviderUI(provider, status, healthScore, incidents) {
+    const isHealthy = status === 'Healthy';
+    const isUnknown = status === 'Unknown';
+
+    const reportElem = document.getElementById(`reports-${provider}`);
+    const peakElem = document.getElementById(`peak-${provider}`);
+    const lastFetchElem = document.getElementById(`lastfetch-${provider}`);
+
+    if (reportElem) reportElem.previousElementSibling.innerText = "Active Incidents";
+    if (peakElem) peakElem.previousElementSibling.innerText = "Status";
+    if (lastFetchElem) lastFetchElem.previousElementSibling.innerText = "Last Fetch";
+
+    if (reportElem) {
+        reportElem.innerText = String(incidents.length || 0);
+    }
+
+    if (peakElem) {
+        peakElem.innerText = isUnknown ? 'Unknown' : status;
+    }
+
+    if (lastFetchElem && state[provider].lastFetch) {
+        lastFetchElem.innerText = formatTimeAgo(state[provider].lastFetch);
+    }
+
+    const badge = document.getElementById(`status-${provider}`);
+    if (badge) {
+        if (isUnknown) {
+            badge.className = 'status-badge unknown';
+            badge.innerText = 'Unknown';
+        } else if (!isHealthy) {
+            badge.className = 'status-badge danger';
+            badge.innerText = 'Issues Detected';
+        } else {
+            badge.className = 'status-badge healthy';
+            badge.innerText = 'Healthy';
+        }
+    }
+
+    const chart = charts[provider];
+    if (chart) {
+        const color = isUnknown ? '#64748b' : (isHealthy ? '#22c55e' : '#ef4444');
+        chart.data.datasets[0].borderColor = color;
+        const ctx = chart.ctx;
+        const gradient = ctx.createLinearGradient(0, 0, 0, 200);
+        gradient.addColorStop(0, isUnknown ? 'rgba(100, 116, 139, 0.5)' : (isHealthy ? 'rgba(34, 197, 94, 0.5)' : 'rgba(239, 68, 68, 0.5)'));
+        gradient.addColorStop(1, 'rgba(0,0,0,0)');
+        chart.data.datasets[0].backgroundColor = gradient;
+        chart.update();
+    }
 }
 
 async function fetchData() {
@@ -149,66 +242,47 @@ function updateMap(data) {
 function updateProvider(provider, data) {
     const { status, incidents } = data;
 
-    // Update State
+    state[provider].lastFetch = new Date();
     const isHealthy = status === 'Healthy';
-    const numericStatus = data.healthScore !== undefined ? data.healthScore : (isHealthy ? 1 : 0);
+    const isUnknown = status === 'Unknown';
+    const numericStatus = data.healthScore !== undefined ? data.healthScore : (isUnknown ? 1 : (isHealthy ? 1 : 0));
 
-    state[provider].history.push(numericStatus);
-    if (state[provider].history.length > MAX_HISTORY) {
-        state[provider].history.shift();
+    if (!state[provider].fromCache) {
+        state[provider].history.push(numericStatus);
+        if (state[provider].history.length > MAX_HISTORY) {
+            state[provider].history.shift();
+        }
     }
 
-    // Update Chart
-    const chart = charts[provider];
-    chart.data.datasets[0].data = state[provider].history;
+    state[provider].currentStatus = status;
+    state[provider].fromCache = false;
 
-    // Color logic
-    const color = isHealthy ? '#22c55e' : '#ef4444'; // Green or Red
-    chart.data.datasets[0].borderColor = color;
-    const ctx = chart.ctx;
-    const gradient = ctx.createLinearGradient(0, 0, 0, 200);
-    gradient.addColorStop(0, isHealthy ? 'rgba(34, 197, 94, 0.5)' : 'rgba(239, 68, 68, 0.5)');
-    gradient.addColorStop(1, 'rgba(0,0,0,0)');
-    chart.data.datasets[0].backgroundColor = gradient;
+    updateProviderUI(provider, status, numericStatus, incidents);
 
-    chart.update();
-
-    // Update Text Stats
-    const reportElem = document.getElementById(`reports-${provider}`);
-    const peakElem = document.getElementById(`peak-${provider}`);
-
-    // "Current Reports" -> "Active Incidents"
-    // "24h Peak" -> "Status"
-    reportElem.previousElementSibling.innerText = "Active Incidents";
-    peakElem.previousElementSibling.innerText = "Status";
-
-    // Render Incidents List
-    if (incidents.length > 0) {
-        reportElem.innerHTML = `<ul class="incident-list">
-            ${incidents.map(inc => `<li><a href="${inc.link}" target="_blank">${inc.name}</a></li>`).join('')}
-        </ul>`;
-    } else {
-        reportElem.innerText = "0";
-    }
-
-    peakElem.innerText = status;
-
-    // Update Badge
-    const badge = document.getElementById(`status-${provider}`);
-    if (!isHealthy) {
-        badge.className = 'status-badge danger';
-        badge.innerText = 'Issues Detected';
-    } else {
-        badge.className = 'status-badge healthy';
-        badge.innerText = 'Healthy';
-    }
-
-    // Update News
     const newsList = document.getElementById(`news-${provider}`);
-    if (data.news && data.news.length > 0) {
-        newsList.innerHTML = data.news.map(item => `
+    const incidentItems = (incidents || []).map(inc => ({
+        type: 'incident',
+        title: inc.name,
+        link: inc.link,
+        source: 'Status Feed',
+        pubDate: new Date().toISOString()
+    }));
+
+    const newsItems = (data.news || []).map(item => ({
+        type: 'news',
+        title: item.title,
+        link: item.link,
+        source: item.source,
+        pubDate: item.pubDate
+    }));
+
+    const feedItems = [...incidentItems, ...newsItems].slice(0, 6);
+
+    if (feedItems.length > 0) {
+        newsList.innerHTML = feedItems.map(item => `
             <li>
                 <a href="${item.link}" target="_blank" rel="noopener noreferrer">
+                    ${item.type === 'incident' ? '<span class="feed-pill">Incident</span>' : ''}
                     <span class="news-title">${item.title}</span>
                     <span class="news-meta">
                         <span class="news-source">${item.source}</span>
@@ -218,8 +292,27 @@ function updateProvider(provider, data) {
             </li>
         `).join('');
     } else {
-        newsList.innerHTML = '<li class="no-news">No recent news found</li>';
+        newsList.innerHTML = '<li class="no-news">No recent incidents or news found</li>';
     }
+}
+
+function formatTimeAgo(date) {
+    if (!date) return 'Never';
+    const seconds = Math.floor((new Date() - date) / 1000);
+    if (seconds < 60) return `${seconds}s ago`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ago`;
+}
+
+function updateLastFetchTimers() {
+    ['aws', 'azure', 'gcp', 'cloudflare', 'akamai', 'fastly'].forEach(provider => {
+        const elem = document.getElementById(`lastfetch-${provider}`);
+        if (elem && state[provider].lastFetch) {
+            elem.innerText = formatTimeAgo(state[provider].lastFetch);
+        }
+    });
 }
 
 function updateGlobalStatus(data) {
