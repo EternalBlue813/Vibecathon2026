@@ -3,7 +3,6 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 const xml2js = require('xml2js');
-const path = require('path');
 const { supabase, storeSnapshot, storeIncident, storeNews } = require('./supabase');
 
 const app = express();
@@ -13,16 +12,33 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
+const ENTITY_CONFIG = {
+    dbs:        { name: 'DBS',        category: 'bank', simulated: true },
+    ocbc:       { name: 'OCBC',       category: 'bank', simulated: true },
+    uob:        { name: 'UOB',        category: 'bank', simulated: true },
+    citi:       { name: 'Citi',       category: 'bank', simulated: true },
+    scb:        { name: 'SCB',        category: 'bank', simulated: true },
+    hsbc:       { name: 'HSBC',       category: 'bank', simulated: true },
+    maybank:    { name: 'Maybank',    category: 'bank', simulated: true },
+    aws:        { name: 'AWS',        category: 'cloud' },
+    azure:      { name: 'Azure',      category: 'cloud' },
+    gcp:        { name: 'Google Cloud', category: 'cloud' },
+    cloudflare: { name: 'Cloudflare', category: 'cdn' },
+    akamai:     { name: 'Akamai',     category: 'cdn' },
+};
+
+const ALL_SLUGS = Object.keys(ENTITY_CONFIG);
+const BANK_SLUGS = ALL_SLUGS.filter(s => ENTITY_CONFIG[s].category === 'bank');
+const CLOUD_SLUGS = ALL_SLUGS.filter(s => ENTITY_CONFIG[s].category === 'cloud');
+const CDN_SLUGS = ALL_SLUGS.filter(s => ENTITY_CONFIG[s].category === 'cdn');
+
+function defaultEntry() {
+    return { status: 'Unknown', healthScore: 1, incidents: [], news: [], regionImpact: {} };
+}
+
 let cache = {
     timestamp: 0,
-    data: {
-        aws: { status: 'Unknown', incidents: [], news: [], regionImpact: {} },
-        azure: { status: 'Unknown', incidents: [], news: [], regionImpact: {} },
-        gcp: { status: 'Unknown', incidents: [], news: [], regionImpact: {} },
-        cloudflare: { status: 'Unknown', incidents: [], news: [], regionImpact: {} },
-        akamai: { status: 'Unknown', incidents: [], news: [], regionImpact: {} },
-        fastly: { status: 'Unknown', incidents: [], news: [], regionImpact: {} }
-    }
+    data: Object.fromEntries(ALL_SLUGS.map(s => [s, defaultEntry()]))
 };
 
 let simulations = {};
@@ -206,26 +222,32 @@ async function fetchAzure() {
 }
 
 async function fetchAllStatus() {
-    const [aws, gcp, azure, cloudflare, akamai, fastly] = await Promise.all([
+    const [aws, gcp, azure, cloudflare, akamai] = await Promise.all([
         fetchAWS(),
         fetchGCP(),
         fetchAzure(),
         fetchStatusPage('Cloudflare', 'https://www.cloudflarestatus.com/api/v2/summary.json'),
         fetchStatusPage('Akamai', 'https://www.akamaistatus.com/api/v2/summary.json'),
-        fetchStatusPage('Fastly', 'https://www.fastlystatus.com/api/v2/summary.json')
     ]);
-    return { aws, gcp, azure, cloudflare, akamai, fastly };
+
+    const result = { aws, gcp, azure, cloudflare, akamai };
+
+    for (const slug of BANK_SLUGS) {
+        result[slug] = { status: 'Healthy', healthScore: 1, incidents: [], regionImpact: {} };
+    }
+
+    return result;
 }
 
 async function fetchAllNews() {
-    return {
-        aws: await fetchNews('AWS'),
-        azure: await fetchNews('Azure'),
-        gcp: await fetchNews('Google Cloud'),
-        cloudflare: await fetchNews('Cloudflare'),
-        akamai: await fetchNews('Akamai'),
-        fastly: await fetchNews('Fastly')
-    };
+    const newsMap = {};
+    for (const slug of [...CLOUD_SLUGS, ...CDN_SLUGS]) {
+        newsMap[slug] = await fetchNews(ENTITY_CONFIG[slug].name);
+    }
+    for (const slug of BANK_SLUGS) {
+        newsMap[slug] = await fetchNews(ENTITY_CONFIG[slug].name + ' bank');
+    }
+    return newsMap;
 }
 
 async function persistToDatabase(data) {
@@ -301,7 +323,9 @@ async function updateNews() {
 
     for (const [provider, articles] of Object.entries(newsData)) {
         if (Array.isArray(articles) && articles.length > 0) {
-            cache.data[provider].news = articles;
+            if (cache.data[provider]) {
+                cache.data[provider].news = articles;
+            }
         }
     }
 
@@ -310,6 +334,12 @@ async function updateNews() {
     return cache.data;
 }
 
+// --- API Routes ---
+
+app.get('/api/config', (req, res) => {
+    res.json(ENTITY_CONFIG);
+});
+
 app.get('/status', async (req, res) => {
     const statusData = await updateStatus();
     await updateNews();
@@ -317,18 +347,19 @@ app.get('/status', async (req, res) => {
     const responseData = JSON.parse(JSON.stringify(statusData));
 
     for (const [provider, regions] of Object.entries(simulations)) {
-        if (responseData[provider]) {
-            for (const [region, count] of Object.entries(regions)) {
-                responseData[provider].regionImpact[region] = (responseData[provider].regionImpact[region] || 0) + count;
-                responseData[provider].status = 'Warning';
-                responseData[provider].healthScore = Math.max(0, responseData[provider].healthScore - (count * 0.05));
-                for (let i = 0; i < count; i++) {
-                    responseData[provider].incidents.unshift({
-                        name: `[SIMULATION] ${provider.toUpperCase()} Outage in ${region}`,
-                        link: '#',
-                        region: region
-                    });
-                }
+        if (!responseData[provider]) {
+            responseData[provider] = defaultEntry();
+        }
+        for (const [region, count] of Object.entries(regions)) {
+            responseData[provider].regionImpact[region] = (responseData[provider].regionImpact[region] || 0) + count;
+            responseData[provider].status = 'Warning';
+            responseData[provider].healthScore = Math.max(0, responseData[provider].healthScore - (count * 0.05));
+            for (let i = 0; i < count; i++) {
+                responseData[provider].incidents.unshift({
+                    name: `[SIMULATION] ${(ENTITY_CONFIG[provider]?.name || provider).toUpperCase()} Outage in ${region}`,
+                    link: '#',
+                    region: region
+                });
             }
         }
     }
@@ -337,8 +368,11 @@ app.get('/status', async (req, res) => {
 
 app.post('/simulate', (req, res) => {
     const { provider, region } = req.body;
+    if (!ENTITY_CONFIG[provider]) {
+        return res.status(400).json({ error: 'Unknown provider' });
+    }
     if (!simulations[provider]) simulations[provider] = {};
-    simulations[provider][region] = (simulations[provider][region] || 0) + 5;
+    simulations[provider][region || 'AS'] = (simulations[provider][region || 'AS'] || 0) + 5;
     res.json({ success: true, simulations });
 });
 
@@ -352,30 +386,44 @@ app.get('/history', async (req, res) => {
         return res.status(503).json({ error: 'Database not configured' });
     }
 
-    const providers = ['aws', 'azure', 'gcp', 'cloudflare', 'akamai', 'fastly'];
     const result = {};
 
-    for (const provider of providers) {
+    for (const slug of ALL_SLUGS) {
         const { data, error } = await supabase
             .from('snapshots')
             .select('id, provider, polled_at, health_score, status')
-            .eq('provider', provider)
+            .eq('provider', slug)
             .order('polled_at', { ascending: false })
             .limit(20);
 
         if (error) {
-            console.error(`[Supabase] Failed to fetch history for ${provider}:`, error.message);
-            result[provider] = [];
+            console.error(`[Supabase] Failed to fetch history for ${slug}:`, error.message);
+            result[slug] = [];
         } else {
-            result[provider] = data ? data.reverse() : [];
+            result[slug] = data ? data.reverse() : [];
         }
     }
 
     res.json(result);
 });
 
+app.get('/news/:entity', async (req, res) => {
+    const entity = req.params.entity;
+    if (!ENTITY_CONFIG[entity]) {
+        return res.status(404).json({ error: 'Unknown entity' });
+    }
+
+    const query = ENTITY_CONFIG[entity].category === 'bank'
+        ? ENTITY_CONFIG[entity].name + ' bank'
+        : ENTITY_CONFIG[entity].name;
+
+    const articles = await fetchNews(query);
+    res.json(articles);
+});
+
 app.listen(PORT, () => {
     console.log(`[StatusSphere] Server running at http://localhost:${PORT}`);
+    console.log(`[StatusSphere] Monitoring: ${ALL_SLUGS.join(', ')}`);
     console.log(`[StatusSphere] Status polling: every ${CACHE_DURATION / 1000} seconds`);
     console.log(`[StatusSphere] News polling: every ${NEWS_FETCH_INTERVAL / 60000} minutes`);
 });
