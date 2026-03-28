@@ -6,18 +6,24 @@
 
 ## Overview
 
-StatusSphere is a real-time cloud infrastructure status monitoring dashboard that tracks the health of major cloud providers and CDN services.
+StatusSphere is a real-time infrastructure status monitoring dashboard that tracks the health of banks, cloud providers, and CDN services. The main dashboard shows green/red status tiles; clicking a tile opens a detail page with history chart, screenshot area, AI summary, and media news.
 
-### Monitored Providers
+### Monitored Entities
 
-| Provider | Status Source | CDN/Cloud |
-|----------|---------------|-----------|
-| AWS | AWS Health API | Cloud |
-| Azure | Azure Status Feed (RSS) | Cloud |
-| GCP | Google Cloud Status | Cloud |
-| Cloudflare | Statuspage API | CDN |
-| Akamai | Statuspage API | CDN |
-| Fastly | Statuspage API | CDN |
+| Entity | Slug | Category | Status Source |
+|--------|------|----------|---------------|
+| DBS | dbs | Bank | Simulated (v1) |
+| OCBC | ocbc | Bank | Simulated (v1) |
+| UOB | uob | Bank | Simulated (v1) |
+| Citi | citi | Bank | Simulated (v1) |
+| SCB | scb | Bank | Simulated (v1) |
+| HSBC | hsbc | Bank | Simulated (v1) |
+| Maybank | maybank | Bank | Simulated (v1) |
+| AWS | aws | Cloud | AWS Health API |
+| Azure | azure | Cloud | Azure Status Feed (RSS) |
+| Google Cloud | gcp | Cloud | Google Cloud Status JSON |
+| Cloudflare | cloudflare | CDN | Statuspage API |
+| Akamai | akamai | CDN | Statuspage API |
 
 ---
 
@@ -35,15 +41,26 @@ StatusSphere is a real-time cloud infrastructure status monitoring dashboard tha
                     └───────────────────┘
 ```
 
-### Components
+### Pages
+
+| Page | Purpose |
+|------|---------|
+| `public/index.html` | Dashboard with green/red status tiles (banks, cloud, CDN) |
+| `public/detail.html` | Detail page per entity: history chart, screenshot, AI summary, news |
+
+### Files
 
 | File | Purpose |
 |------|---------|
-| `server.js` | Express server, fetches data, handles API routes |
+| `server.js` | Express server, fetches data, handles API routes, entity config |
 | `supabase.js` | Supabase client, database operations |
-| `public/index.html` | Dashboard HTML |
-| `public/app.js` | Frontend logic, polling, UI updates |
-| `public/style.css` | Dashboard styling |
+| `public/index.html` | Dashboard HTML (tile grid) |
+| `public/app.js` | Dashboard JS: polls `/status`, updates tile colors |
+| `public/detail.html` | Detail page HTML |
+| `public/detail.js` | Detail page JS: Chart.js history, news, summary |
+| `public/style.css` | Shared stylesheet (dashboard + detail) |
+| `database/001-initial.sql` | Initial schema |
+| `database/002-add-banks.sql` | Migration to allow bank slugs |
 
 ---
 
@@ -63,14 +80,15 @@ StatusSphere is a real-time cloud infrastructure status monitoring dashboard tha
 | `fetchAWS()` | AWS Health API | UTF-16 encoded response |
 | `fetchAzure()` | Azure RSS Feed | XML format |
 | `fetchGCP()` | GCP Status JSON | Open incidents only |
-| `fetchStatusPage()` | Atlassian Statuspage API | Cloudflare, Akamai, Fastly |
+| `fetchStatusPage()` | Atlassian Statuspage API | Cloudflare, Akamai |
+| Banks | Simulated | Default Healthy; toggle via `/simulate` |
 
 ### News Source
 
 - Google News RSS feed
-- Searches for: `<provider> outage OR downtime`
-- Returns top 3 articles
-- If a fetch returns no new articles, dashboard keeps the last successful news payload
+- Searches for: `<entity> outage OR downtime`
+- Banks use `<name> bank outage OR downtime`
+- Returns top 3 articles per entity
 
 ---
 
@@ -79,28 +97,44 @@ StatusSphere is a real-time cloud infrastructure status monitoring dashboard tha
 ### Tables
 
 ```sql
-snapshots        -- One row per provider per poll
+snapshots        -- One row per entity per poll
 incidents        -- Outages linked to snapshots
 news_articles    -- Related news linked to snapshots
 ```
+
+### Migrations
+
+- `001-initial.sql` — Creates tables, indexes, pg_cron cleanup
+- `002-add-banks.sql` — Extends provider CHECK to include bank slugs + 'Down' status
 
 ### Cleanup
 
 - Automatic deletion via pg_cron
 - Runs daily at 3:00 AM
-- Removes data older than 30 days
+- Removes data older than 1 day
 
 ---
 
 ## API Endpoints
 
+### GET `/api/config`
+
+Returns the entity configuration map (slug → name, category, simulated flag).
+
 ### GET `/status`
 
-Returns current status for all providers.
+Returns current status for all entities including bank simulations.
 
 **Response:**
 ```json
 {
+  "dbs": {
+    "status": "Healthy",
+    "healthScore": 1.0,
+    "incidents": [],
+    "news": [],
+    "regionImpact": {}
+  },
   "aws": {
     "status": "Healthy",
     "healthScore": 1.0,
@@ -113,22 +147,17 @@ Returns current status for all providers.
 
 ### GET `/history`
 
-Returns latest 20 snapshots per provider from database (for populating charts on page load).
+Returns latest 20 snapshots per entity from database.
 
-**Response:**
-```json
-{
-  "aws": [
-    { "id": "...", "provider": "aws", "polled_at": "...", "health_score": 1.0, "status": "Healthy" }
-  ]
-}
-```
+### GET `/news/:entity`
+
+Returns fresh news articles for a specific entity (used by detail page).
 
 ### POST `/simulate`
 
-Injects fake outage for testing.
+Injects fake outage for testing any entity.
 
-**Body:** `{ "provider": "aws", "region": "NA" }`
+**Body:** `{ "provider": "dbs", "region": "AS" }`
 
 ### POST `/reset`
 
@@ -139,24 +168,20 @@ Clears all simulations.
 ## Data Flow
 
 ```
-Page Load:
-  Browser → GET /history → Supabase (latest 20 per provider) → Populate charts
+Page Load (Dashboard):
+  Browser → GET /api/config → Build tiles
+  Browser → GET /status → Color tiles green/red
+
+Page Load (Detail):
+  Browser → GET /api/config → Set entity name
+  Browser → GET /history → Populate chart
+  Browser → GET /status → Update badge + chart
+  Browser → GET /news/:entity → Populate news list
 
 Live Polling (every 2 min):
-  Browser → GET /status → Web APIs → Response → Store to Supabase
-
-Background History Refresh (every 5 min):
-  Browser → GET /history → Supabase → Update cached state
+  Dashboard: GET /status → Update tile states
+  Detail: GET /status → Update badge + push to chart
 ```
-
-### Browser Caching
-
-- Historical data is cached in browser `state` object
-- Charts are pre-populated from cache on page load
-- `/status` provides live updates on top of cached history
-- History refreshes from DB every 5 minutes to sync new data
-- Provider cards always show fixed stats: active incident count, status, and last fetch
-- Incident links are merged into the news feed and tagged as `Incident`
 
 ---
 
@@ -165,36 +190,28 @@ Background History Refresh (every 5 min):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SUPABASE_URL` | - | Supabase project URL |
-| `SUPABASE_SECRET_KEY` | - | Supabase secret key (server-side only, bypasses RLS) |
+| `SUPABASE_SECRET_KEY` | - | Supabase secret key (server-side only) |
 | `PORT` | 3000 | Server port |
 | `CACHE_DURATION` | 120000 | Status cache (2 min in ms) |
-
-> **Note:** We use `SUPABASE_SECRET_KEY` (not publishable key) because this is server-side code. The secret key bypasses Row Level Security (RLS) policies, allowing inserts from the backend.
-
----
-
-## Region Codes
-
-| Code | Regions |
-|------|---------|
-| NA | US, Canada, Mexico |
-| SA | Brazil, Argentina, Chile |
-| EU | UK, Germany, France, etc. |
-| AF | South Africa, Egypt |
-| AS | Japan, Singapore, India |
-| OC | Australia, New Zealand |
 
 ---
 
 ## Development
 
-### Adding a New Provider
+### Adding a New Bank / Provider
 
-1. Add provider to `cache` object in `server.js`
-2. Create fetch function (similar to `fetchAWS()`)
-3. Add to `fetchAllStatus()` promise
-4. Update frontend `state` in `app.js`
+1. Add entry to `ENTITY_CONFIG` in `server.js`
+2. If real fetcher needed, create fetch function and add to `fetchAllStatus()`
+3. Run `002-add-banks.sql` migration if new slug not in CHECK constraint
+4. Frontend tiles auto-generate from `/api/config`
 5. Update this document
+
+### Swapping Bank Simulation for Real Checks
+
+1. Remove `simulated: true` from the bank entry in `ENTITY_CONFIG`
+2. Create a fetch function (e.g. `fetchDBS()`) that does HTTP HEAD/GET to the bank URL
+3. Add it to the `fetchAllStatus()` promise
+4. The dashboard and detail pages require no changes
 
 ### Modifying Fetch Intervals
 
@@ -205,13 +222,14 @@ Background History Refresh (every 5 min):
 
 ## Last Updated
 
-Document version: 1.2
-Last updated: 2026-03-25
+Document version: 2.0
+Last updated: 2026-03-27
 
 ## Changelog
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 2.0 | 2026-03-27 | Redesign: mobile-first tile dashboard, detail page (chart, screenshot, AI summary, news), added 7 banks (simulated), removed world map, removed Fastly from UI |
 | 1.2 | 2026-03-25 | Fixed news persistence timing, retained last news when fetch is empty, moved incidents to count + merged feed items |
 | 1.1 | 2026-03-25 | Added `/history` endpoint, browser caching, database-first data loading |
 | 1.0 | 2026-03-25 | Initial version |

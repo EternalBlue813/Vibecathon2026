@@ -9,10 +9,17 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 
 <body>
+    <!-- Breaking-news ticker -->
+    <div class="ticker-bar" aria-live="polite" aria-label="Status headline">
+        <span class="ticker-label">LIVE</span>
+        <div class="ticker-track">
+            <span class="ticker-text" id="ticker-text">Loading status headline...</span>
+        </div>
+    </div>
+
     <div class="app-container">
         <header class="main-header">
             <div class="logo-area">
@@ -26,249 +33,69 @@
                 </div>
             </div>
         </header>
-    </div>
 
-    <!-- Global Status Map -->
-    <div class="map-container">
-        <img src="world_map.png" alt="World Map" class="world-map-img">
-        <div class="map-overlay" id="map-overlay">
-            <!-- Heatmap points will be injected here or controlled via CSS -->
-            <div class="heat-point" id="region-na" style="top: 30%; left: 20%;"></div>
-            <div class="heat-point" id="region-sa" style="top: 70%; left: 28%;"></div>
-            <div class="heat-point" id="region-eu" style="top: 25%; left: 52%;"></div>
-            <div class="heat-point" id="region-af" style="top: 55%; left: 53%;"></div>
-            <div class="heat-point" id="region-as" style="top: 30%; left: 75%;"></div>
-            <div class="heat-point" id="region-oc" style="top: 75%; left: 85%;"></div>
+        <!-- Outage summary -->
+        <section class="outage-summary" id="outage-summary" aria-live="polite">
+            <p class="outage-text" id="outage-text">Checking service status...</p>
+        </section>
+
+        <!-- Inline ask bar -->
+        <div class="ask-bar">
+            <form class="ask-form" id="ask-form" autocomplete="off">
+                <input type="text" class="ask-input" id="ask-input" placeholder="Ask StatusSphere AI about any service..." maxlength="500" />
+                <button type="submit" class="ask-send" aria-label="Ask">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                </button>
+            </form>
+            <div class="ask-response hidden" id="ask-response"></div>
         </div>
-    </div>
 
-    <div class="app-container">
-        <main class="dashboard-grid">
-            <div class="section-divider"
-                style="grid-column: 1 / -1; margin-top: 2rem; margin-bottom: 1rem; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.5rem;">
-                <h2
-                    style="font-size: 1.2rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em;">
-                    Cloud Providers</h2>
-            </div>
+        <main>
+            <section class="tile-section" aria-label="Banks">
+                <h2 class="section-heading">Banks</h2>
+                <div class="tile-grid" id="grid-banks"></div>
+            </section>
 
-            <!-- AWS Card -->
-            <div class="provider-card" id="card-aws">
-                <div class="card-header">
-                    <div class="provider-info">
-                        <img src="https://upload.wikimedia.org/wikipedia/commons/9/93/Amazon_Web_Services_Logo.svg"
-                            alt="AWS Logo" class="provider-logo">
-                        <h2>AWS</h2>
-                    </div>
-                    <div class="status-badge healthy" id="status-aws">Healthy</div>
-                </div>
-                <div class="chart-container">
-                    <canvas id="chart-aws"></canvas>
-                </div>
-                <div class="stats-row">
-                    <div class="stat-item">
-                        <span class="stat-label">Current Reports</span>
-                        <span class="stat-value" id="reports-aws">0</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">24h Peak</span>
-                        <span class="stat-value" id="peak-aws">0</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Last Fetch</span>
-                        <span class="stat-value" id="lastfetch-aws">Never</span>
-                    </div>
-                </div>
-                <div class="news-section">
-                    <h3>Recent News</h3>
-                    <ul class="news-list" id="news-aws"></ul>
-                </div>
-            </div>
+            <section class="tile-section" aria-label="Cloud Providers">
+                <h2 class="section-heading">Cloud Providers</h2>
+                <div class="tile-grid" id="grid-cloud"></div>
+            </section>
 
-            <!-- Azure Card -->
-            <div class="provider-card" id="card-azure">
-                <div class="card-header">
-                    <div class="provider-info">
-                        <img src="https://upload.wikimedia.org/wikipedia/commons/f/fa/Microsoft_Azure.svg"
-                            alt="Azure Logo" class="provider-logo">
-                        <h2>Azure</h2>
-                    </div>
-                    <div class="status-badge healthy" id="status-azure">Healthy</div>
-                </div>
-                <div class="chart-container">
-                    <canvas id="chart-azure"></canvas>
-                </div>
-                <div class="stats-row">
-                    <div class="stat-item">
-                        <span class="stat-label">Current Reports</span>
-                        <span class="stat-value" id="reports-azure">0</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">24h Peak</span>
-                        <span class="stat-value" id="peak-azure">0</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Last Fetch</span>
-                        <span class="stat-value" id="lastfetch-azure">Never</span>
-                    </div>
-                </div>
-                <div class="news-section">
-                    <h3>Recent News</h3>
-                    <ul class="news-list" id="news-azure"></ul>
-                </div>
-            </div>
-
-            <!-- GCP Card -->
-            <div class="provider-card" id="card-gcp">
-                <div class="card-header">
-                    <div class="provider-info">
-                        <img src="https://upload.wikimedia.org/wikipedia/commons/5/51/Google_Cloud_logo.svg"
-                            alt="GCP Logo" class="provider-logo">
-                        <h2>Google Cloud</h2>
-                    </div>
-                    <div class="status-badge healthy" id="status-gcp">Healthy</div>
-                </div>
-                <div class="chart-container">
-                    <canvas id="chart-gcp"></canvas>
-                </div>
-                <div class="stats-row">
-                    <div class="stat-item">
-                        <span class="stat-label">Current Reports</span>
-                        <span class="stat-value" id="reports-gcp">0</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">24h Peak</span>
-                        <span class="stat-value" id="peak-gcp">0</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Last Fetch</span>
-                        <span class="stat-value" id="lastfetch-gcp">Never</span>
-                    </div>
-                </div>
-                <div class="news-section">
-                    <h3>Recent News</h3>
-                    <ul class="news-list" id="news-gcp"></ul>
-                </div>
-            </div>
-
-            <!-- CDN Providers Section -->
-            <div class="section-divider"
-                style="grid-column: 1 / -1; margin-top: 2rem; margin-bottom: 1rem; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.5rem;">
-                <h2
-                    style="font-size: 1.2rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em;">
-                    CDN & Edge Providers</h2>
-            </div>
-
-            <!-- Cloudflare Card -->
-            <div class="provider-card" id="card-cloudflare">
-                <div class="card-header">
-                    <div class="provider-info">
-                        <img src="https://upload.wikimedia.org/wikipedia/commons/4/4b/Cloudflare_Logo.svg"
-                            alt="Cloudflare Logo" class="provider-logo">
-                        <h2>Cloudflare</h2>
-                    </div>
-                    <div class="status-badge healthy" id="status-cloudflare">Healthy</div>
-                </div>
-                <div class="chart-container">
-                    <canvas id="chart-cloudflare"></canvas>
-                </div>
-                <div class="stats-row">
-                    <div class="stat-item">
-                        <span class="stat-label">Current Reports</span>
-                        <span class="stat-value" id="reports-cloudflare">0</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Status</span>
-                        <span class="stat-value" id="peak-cloudflare">0</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Last Fetch</span>
-                        <span class="stat-value" id="lastfetch-cloudflare">Never</span>
-                    </div>
-                </div>
-                <div class="news-section">
-                    <h3>Recent News</h3>
-                    <ul class="news-list" id="news-cloudflare"></ul>
-                </div>
-            </div>
-
-            <!-- Akamai Card -->
-            <div class="provider-card" id="card-akamai">
-                <div class="card-header">
-                    <div class="provider-info">
-                        <img src="https://upload.wikimedia.org/wikipedia/commons/8/8b/Akamai_logo.svg" alt="Akamai Logo"
-                            class="provider-logo">
-                        <h2>Akamai</h2>
-                    </div>
-                    <div class="status-badge healthy" id="status-akamai">Healthy</div>
-                </div>
-                <div class="chart-container">
-                    <canvas id="chart-akamai"></canvas>
-                </div>
-                <div class="stats-row">
-                    <div class="stat-item">
-                        <span class="stat-label">Current Reports</span>
-                        <span class="stat-value" id="reports-akamai">0</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Status</span>
-                        <span class="stat-value" id="peak-akamai">0</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Last Fetch</span>
-                        <span class="stat-value" id="lastfetch-akamai">Never</span>
-                    </div>
-                </div>
-                <div class="news-section">
-                    <h3>Recent News</h3>
-                    <ul class="news-list" id="news-akamai"></ul>
-                </div>
-            </div>
-
-            <!-- Fastly Card -->
-            <div class="provider-card" id="card-fastly">
-                <div class="card-header">
-                    <div class="provider-info">
-                        <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/a/a3/Fastly_logo.svg/2560px-Fastly_logo.svg.png"
-                            alt="Fastly Logo" class="provider-logo">
-                        <h2>Fastly</h2>
-                    </div>
-                    <div class="status-badge healthy" id="status-fastly">Healthy</div>
-                </div>
-                <div class="chart-container">
-                    <canvas id="chart-fastly"></canvas>
-                </div>
-                <div class="stats-row">
-                    <div class="stat-item">
-                        <span class="stat-label">Current Reports</span>
-                        <span class="stat-value" id="reports-fastly">0</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Status</span>
-                        <span class="stat-value" id="peak-fastly">0</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Last Fetch</span>
-                        <span class="stat-value" id="lastfetch-fastly">Never</span>
-                    </div>
-                </div>
-                <div class="news-section">
-                    <h3>Recent News</h3>
-                    <ul class="news-list" id="news-fastly"></ul>
-                </div>
-            </div>
+            <section class="tile-section" aria-label="CDN Providers">
+                <h2 class="section-heading">CDN &amp; Edge</h2>
+                <div class="tile-grid" id="grid-cdn"></div>
+            </section>
         </main>
 
         <div class="controls-area">
             <h3>Simulation Controls</h3>
-            <div class="button-group">
-                <button onclick="triggerSpike('aws', 'NA')">Spike AWS (NA)</button>
-                <button onclick="triggerSpike('aws', 'AS')">Spike AWS (Asia)</button>
-                <button onclick="triggerSpike('azure', 'EU')">Spike Azure (EU)</button>
-                <button onclick="triggerSpike('gcp', 'NA')">Spike GCP (NA)</button>
-                <button onclick="resetAll()" class="secondary">Reset All</button>
-            </div>
+            <div class="button-group" id="sim-buttons"></div>
         </div>
     </div>
+
+    <!-- Chat widget -->
+    <button class="chat-fab" id="chat-fab" aria-label="Open chat">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+    </button>
+
+    <div class="chat-panel hidden" id="chat-panel">
+        <div class="chat-header">
+            <span class="chat-title">StatusSphere AI</span>
+            <button class="chat-close" id="chat-close" aria-label="Close chat">&times;</button>
+        </div>
+        <div class="chat-messages" id="chat-messages">
+            <div class="chat-msg assistant">
+                <p>Hi! I'm StatusSphere AI. Ask me about the status of any monitored service — banks, cloud providers, or CDN.</p>
+            </div>
+        </div>
+        <form class="chat-input-row" id="chat-form" autocomplete="off">
+            <input type="text" class="chat-input" id="chat-input" placeholder="Ask about service status..." maxlength="500" />
+            <button type="submit" class="chat-send" aria-label="Send">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+            </button>
+        </form>
+    </div>
+
     <script src="app.js"></script>
 </body>
 
