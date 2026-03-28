@@ -6,7 +6,7 @@ ALTER TABLE snapshots DROP CONSTRAINT IF EXISTS snapshots_provider_check;
 ALTER TABLE snapshots ADD CONSTRAINT snapshots_provider_check
     CHECK (provider IN (
         'aws', 'azure', 'gcp', 'cloudflare', 'akamai', 'fastly',
-        'dbs', 'ocbc', 'uob', 'citi', 'scb', 'hsbc', 'maybank'
+        'dbs', 'ocbc', 'uob', 'citi', 'scb', 'hsbc', 'maybank', 'sxp'
     ));
 
 -- Drop and recreate the status CHECK to include 'Down' for banks

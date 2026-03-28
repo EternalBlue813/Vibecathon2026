@@ -20,6 +20,7 @@ const ENTITY_CONFIG = {
     scb:        { name: 'SCB',        category: 'bank', simulated: true },
     hsbc:       { name: 'HSBC',       category: 'bank', simulated: true },
     maybank:    { name: 'Maybank',    category: 'bank', simulated: true },
+    sxp:        { name: 'SXP',        category: 'bank', simulated: true },
     aws:        { name: 'AWS',        category: 'cloud' },
     azure:      { name: 'Azure',      category: 'cloud' },
     gcp:        { name: 'Google Cloud', category: 'cloud' },
