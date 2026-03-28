@@ -68,14 +68,14 @@ function buildSimButtons() {
         const btn = document.createElement('button');
         btn.className = 'danger-btn';
         btn.textContent = `Down ${cfg.name}`;
-        btn.addEventListener('click', () => triggerSpike(slug));
+        btn.addEventListener('click', () => triggerSpike(slug, btn));
         group.appendChild(btn);
     }
 
     const resetBtn = document.createElement('button');
     resetBtn.className = 'secondary';
     resetBtn.textContent = 'Reset All';
-    resetBtn.addEventListener('click', resetAll);
+    resetBtn.addEventListener('click', () => resetAll(resetBtn));
     group.appendChild(resetBtn);
 }
 
@@ -203,27 +203,48 @@ function initAskBar() {
 }
 
 // --- Simulation ---
-async function triggerSpike(provider) {
+async function triggerSpike(provider, btn) {
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Simulating...';
+    }
     try {
-        await fetch('/simulate', {
+        const res = await fetch('/simulate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ provider, region: 'AS' })
         });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         await fetchData();
         fetchHeadline();
     } catch (e) {
         console.error(e);
+    } finally {
+        if (btn) {
+            const name = entityConfig[provider]?.name || provider;
+            btn.disabled = false;
+            btn.textContent = `Down ${name}`;
+        }
     }
 }
 
-async function resetAll() {
+async function resetAll(btn) {
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Resetting...';
+    }
     try {
-        await fetch('/reset', { method: 'POST' });
+        const res = await fetch('/reset', { method: 'POST' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         await fetchData();
         fetchHeadline();
     } catch (e) {
         console.error(e);
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Reset All';
+        }
     }
 }
 
