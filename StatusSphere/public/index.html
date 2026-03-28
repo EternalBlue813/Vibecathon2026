@@ -12,6 +12,14 @@
 </head>
 
 <body>
+    <!-- Breaking-news ticker -->
+    <div class="ticker-bar" aria-live="polite" aria-label="Status headline">
+        <span class="ticker-label">LIVE</span>
+        <div class="ticker-track">
+            <span class="ticker-text" id="ticker-text">Loading status headline...</span>
+        </div>
+    </div>
+
     <div class="app-container">
         <header class="main-header">
             <div class="logo-area">
@@ -25,6 +33,22 @@
                 </div>
             </div>
         </header>
+
+        <!-- Outage summary -->
+        <section class="outage-summary" id="outage-summary" aria-live="polite">
+            <p class="outage-text" id="outage-text">Checking service status...</p>
+        </section>
+
+        <!-- Inline ask bar -->
+        <div class="ask-bar">
+            <form class="ask-form" id="ask-form" autocomplete="off">
+                <input type="text" class="ask-input" id="ask-input" placeholder="Ask StatusSphere AI about any service..." maxlength="500" />
+                <button type="submit" class="ask-send" aria-label="Ask">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                </button>
+            </form>
+            <div class="ask-response hidden" id="ask-response"></div>
+        </div>
 
         <main>
             <section class="tile-section" aria-label="Banks">
@@ -48,6 +72,30 @@
             <div class="button-group" id="sim-buttons"></div>
         </div>
     </div>
+
+    <!-- Chat widget -->
+    <button class="chat-fab" id="chat-fab" aria-label="Open chat">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+    </button>
+
+    <div class="chat-panel hidden" id="chat-panel">
+        <div class="chat-header">
+            <span class="chat-title">StatusSphere AI</span>
+            <button class="chat-close" id="chat-close" aria-label="Close chat">&times;</button>
+        </div>
+        <div class="chat-messages" id="chat-messages">
+            <div class="chat-msg assistant">
+                <p>Hi! I'm StatusSphere AI. Ask me about the status of any monitored service — banks, cloud providers, or CDN.</p>
+            </div>
+        </div>
+        <form class="chat-input-row" id="chat-form" autocomplete="off">
+            <input type="text" class="chat-input" id="chat-input" placeholder="Ask about service status..." maxlength="500" />
+            <button type="submit" class="chat-send" aria-label="Send">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+            </button>
+        </form>
+    </div>
+
     <script src="app.js"></script>
 </body>
 
