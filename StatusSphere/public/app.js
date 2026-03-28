@@ -1,318 +1,120 @@
-// Configuration
 const API_URL = '/status';
-const HISTORY_API = '/history';
-const POLL_INTERVAL = 120000; // 2 minutes
-const HISTORY_REFRESH_INTERVAL = 300000; // 5 minutes
-const MAX_HISTORY = 20; // Keep latest 20 points
+const CONFIG_URL = '/api/config';
+const HEADLINE_URL = '/api/headline';
+const CHAT_URL = '/api/chat';
+const POLL_INTERVAL = 120000;
+const HEADLINE_INTERVAL = 120000;
 
-// State
-const state = {
-    aws: { history: [], currentStatus: 'Unknown', incidents: [], lastFetch: null, fromCache: false },
-    azure: { history: [], currentStatus: 'Unknown', incidents: [], lastFetch: null, fromCache: false },
-    gcp: { history: [], currentStatus: 'Unknown', incidents: [], lastFetch: null, fromCache: false },
-    cloudflare: { history: [], currentStatus: 'Unknown', incidents: [], lastFetch: null, fromCache: false },
-    akamai: { history: [], currentStatus: 'Unknown', incidents: [], lastFetch: null, fromCache: false },
-    fastly: { history: [], currentStatus: 'Unknown', incidents: [], lastFetch: null, fromCache: false }
+let entityConfig = {};
+let chatHistory = [];
+
+const GRID_MAP = {
+    bank:  'grid-banks',
+    cloud: 'grid-cloud',
+    cdn:   'grid-cdn',
 };
 
-// Chart Instances
-const charts = {};
-
-// Initialize
+// --- Init ---
 document.addEventListener('DOMContentLoaded', async () => {
-    initCharts();
-    await fetchHistory();
-    Object.keys(state).forEach(p => state[p].fromCache = false);
-    fetchData();
+    await loadConfig();
+    buildTiles();
+    buildSimButtons();
+    await fetchData();
     setInterval(fetchData, POLL_INTERVAL);
-    setInterval(fetchHistory, HISTORY_REFRESH_INTERVAL);
-    setInterval(updateLastFetchTimers, 10000);
+
+    fetchHeadline();
+    setInterval(fetchHeadline, HEADLINE_INTERVAL);
+
+    initAskBar();
+    initChat();
 });
 
-function initCharts() {
-    ['aws', 'azure', 'gcp', 'cloudflare', 'akamai', 'fastly'].forEach(provider => {
-        const ctx = document.getElementById(`chart-${provider}`).getContext('2d');
-
-        const gradient = ctx.createLinearGradient(0, 0, 0, 200);
-        gradient.addColorStop(0, 'rgba(56, 189, 248, 0.5)');
-        gradient.addColorStop(1, 'rgba(56, 189, 248, 0.0)');
-
-        charts[provider] = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: Array(MAX_HISTORY).fill(''),
-                datasets: [{
-                    label: 'Status History',
-                    data: Array(MAX_HISTORY).fill(1),
-                    borderColor: '#38bdf8',
-                    backgroundColor: gradient,
-                    borderWidth: 2,
-                    pointRadius: 2,
-                    stepped: true,
-                    fill: true
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false },
-                    tooltip: { enabled: false }
-                },
-                scales: {
-                    x: { display: false },
-                    y: {
-                        display: true,
-                        min: 0,
-                        max: 1.2,
-                        ticks: {
-                            callback: function (value) {
-                                if (value === 1) return 'UP';
-                                if (value === 0) return 'DOWN';
-                                return '';
-                            },
-                            color: '#64748b',
-                            font: { size: 10 }
-                        },
-                        grid: { color: 'rgba(255, 255, 255, 0.05)' }
-                    }
-                }
-            }
-        });
-    });
-}
-
-async function fetchHistory() {
+// --- Config + Tiles ---
+async function loadConfig() {
     try {
-        const response = await fetch(HISTORY_API);
-        if (!response.ok) return;
-
-        const data = await response.json();
-        let hasData = false;
-
-        for (const [provider, snapshots] of Object.entries(data)) {
-            if (state[provider] && snapshots.length > 0) {
-                const history = snapshots.map(s => s.health_score);
-                const lastSnapshot = snapshots[snapshots.length - 1];
-                const latestStatus = lastSnapshot.status || 'Unknown';
-
-                state[provider].history = history;
-                state[provider].currentStatus = latestStatus;
-                state[provider].lastFetch = new Date();
-
-                if (charts[provider]) {
-                    charts[provider].data.datasets[0].data = history;
-                    charts[provider].update();
-                }
-
-                updateProviderUI(provider, latestStatus, history[history.length - 1] ?? 1, []);
-                hasData = true;
-            }
-        }
-
-        if (hasData) {
-            console.log('[StatusSphere] Loaded history from database');
-        }
-    } catch (error) {
-        console.error('[StatusSphere] Failed to fetch history:', error);
+        const res = await fetch(CONFIG_URL);
+        entityConfig = await res.json();
+    } catch (e) {
+        console.error('Failed to load entity config:', e);
+        entityConfig = {};
     }
 }
 
-function updateProviderUI(provider, status, healthScore, incidents) {
-    const isHealthy = status === 'Healthy';
-    const isUnknown = status === 'Unknown';
+function buildTiles() {
+    for (const [slug, cfg] of Object.entries(entityConfig)) {
+        const gridId = GRID_MAP[cfg.category];
+        const grid = document.getElementById(gridId);
+        if (!grid) continue;
 
-    const reportElem = document.getElementById(`reports-${provider}`);
-    const peakElem = document.getElementById(`peak-${provider}`);
-    const lastFetchElem = document.getElementById(`lastfetch-${provider}`);
-
-    if (reportElem) reportElem.previousElementSibling.innerText = "Active Incidents";
-    if (peakElem) peakElem.previousElementSibling.innerText = "Status";
-    if (lastFetchElem) lastFetchElem.previousElementSibling.innerText = "Last Fetch";
-
-    if (reportElem) {
-        reportElem.innerText = String(incidents.length || 0);
-    }
-
-    if (peakElem) {
-        peakElem.innerText = isUnknown ? 'Unknown' : status;
-    }
-
-    if (lastFetchElem && state[provider].lastFetch) {
-        lastFetchElem.innerText = formatTimeAgo(state[provider].lastFetch);
-    }
-
-    const badge = document.getElementById(`status-${provider}`);
-    if (badge) {
-        if (isUnknown) {
-            badge.className = 'status-badge unknown';
-            badge.innerText = 'Unknown';
-        } else if (!isHealthy) {
-            badge.className = 'status-badge danger';
-            badge.innerText = 'Issues Detected';
-        } else {
-            badge.className = 'status-badge healthy';
-            badge.innerText = 'Healthy';
-        }
-    }
-
-    const chart = charts[provider];
-    if (chart) {
-        const color = isUnknown ? '#64748b' : (isHealthy ? '#22c55e' : '#ef4444');
-        chart.data.datasets[0].borderColor = color;
-        const ctx = chart.ctx;
-        const gradient = ctx.createLinearGradient(0, 0, 0, 200);
-        gradient.addColorStop(0, isUnknown ? 'rgba(100, 116, 139, 0.5)' : (isHealthy ? 'rgba(34, 197, 94, 0.5)' : 'rgba(239, 68, 68, 0.5)'));
-        gradient.addColorStop(1, 'rgba(0,0,0,0)');
-        chart.data.datasets[0].backgroundColor = gradient;
-        chart.update();
+        const tile = document.createElement('a');
+        tile.href = `detail.html?entity=${slug}`;
+        tile.className = 'status-tile unknown';
+        tile.id = `tile-${slug}`;
+        tile.setAttribute('aria-label', `${cfg.name} status`);
+        tile.innerHTML = `
+            <div class="tile-status-dot"></div>
+            <span class="tile-name">${cfg.name}</span>
+            <span class="tile-label">Loading</span>
+        `;
+        grid.appendChild(tile);
     }
 }
 
+function buildSimButtons() {
+    const group = document.getElementById('sim-buttons');
+    if (!group) return;
+
+    for (const [slug, cfg] of Object.entries(entityConfig)) {
+        const btn = document.createElement('button');
+        btn.className = 'danger-btn';
+        btn.textContent = `Down ${cfg.name}`;
+        btn.addEventListener('click', () => triggerSpike(slug));
+        group.appendChild(btn);
+    }
+
+    const resetBtn = document.createElement('button');
+    resetBtn.className = 'secondary';
+    resetBtn.textContent = 'Reset All';
+    resetBtn.addEventListener('click', resetAll);
+    group.appendChild(resetBtn);
+}
+
+// --- Status polling ---
 async function fetchData() {
     try {
         const response = await fetch(API_URL);
         const data = await response.json();
 
-        updateProvider('aws', data.aws);
-        updateProvider('azure', data.azure);
-        updateProvider('gcp', data.gcp);
-        updateProvider('cloudflare', data.cloudflare);
-        updateProvider('akamai', data.akamai);
-        updateProvider('fastly', data.fastly);
-
+        for (const [slug, info] of Object.entries(data)) {
+            updateTile(slug, info);
+        }
         updateGlobalStatus(data);
-        updateMap(data);
+        updateOutageSummary(data);
     } catch (error) {
         console.error('Failed to fetch status:', error);
     }
 }
 
-function updateMap(data) {
-    const providers = {
-        aws: { color: '255, 165, 0', data: data.aws }, // Orange
-        azure: { color: '128, 0, 128', data: data.azure }, // Purple
-        gcp: { color: '66, 133, 244', data: data.gcp }, // Blue
-        cloudflare: { color: '255, 140, 0', data: data.cloudflare }, // Dark Orange
-        akamai: { color: '0, 0, 255', data: data.akamai }, // Blue
-        fastly: { color: '0, 100, 0', data: data.fastly } // Dark Green
-    };
+function updateTile(slug, data) {
+    const tile = document.getElementById(`tile-${slug}`);
+    if (!tile) return;
 
-    const regions = ['na', 'sa', 'eu', 'af', 'as', 'oc'];
+    const isHealthy = data.status === 'Healthy';
+    const isUnknown = data.status === 'Unknown';
 
-    regions.forEach(region => {
-        const point = document.getElementById(`region-${region}`);
-        let weightedR = 0, weightedG = 0, weightedB = 0;
-        let totalIntensity = 0;
+    tile.classList.remove('up', 'down', 'unknown');
+    const label = tile.querySelector('.tile-label');
 
-        Object.values(providers).forEach(p => {
-            // Check if p.data exists before accessing regionImpact
-            if (p.data && p.data.regionImpact) {
-                const impact = p.data.regionImpact[region.toUpperCase()] || 0;
-                if (impact > 0) {
-                    const intensity = Math.min(impact * 0.2, 1); // Cap at 1
-                    const [r, g, b] = p.color.split(',').map(Number);
-
-                    weightedR += r * intensity;
-                    weightedG += g * intensity;
-                    weightedB += b * intensity;
-                    totalIntensity += intensity;
-                }
-            }
-        });
-
-        if (totalIntensity > 0) {
-            const finalR = Math.round(weightedR / totalIntensity);
-            const finalG = Math.round(weightedG / totalIntensity);
-            const finalB = Math.round(weightedB / totalIntensity);
-
-            // Boost alpha for visibility, cap at 0.9
-            const alpha = Math.min(0.9, totalIntensity * 1.5);
-
-            point.style.background = `radial-gradient(circle, rgba(${finalR},${finalG},${finalB},${alpha}) 0%, rgba(${finalR},${finalG},${finalB},0) 70%)`;
-            point.style.opacity = 1;
-            point.style.boxShadow = `0 0 30px 10px rgba(${finalR},${finalG},${finalB},${alpha * 0.5})`;
-        } else {
-            point.style.opacity = 0;
-            point.style.boxShadow = 'none';
-        }
-    });
-}
-
-function updateProvider(provider, data) {
-    const { status, incidents } = data;
-
-    state[provider].lastFetch = new Date();
-    const isHealthy = status === 'Healthy';
-    const isUnknown = status === 'Unknown';
-    const numericStatus = data.healthScore !== undefined ? data.healthScore : (isUnknown ? 1 : (isHealthy ? 1 : 0));
-
-    if (!state[provider].fromCache) {
-        state[provider].history.push(numericStatus);
-        if (state[provider].history.length > MAX_HISTORY) {
-            state[provider].history.shift();
-        }
-    }
-
-    state[provider].currentStatus = status;
-    state[provider].fromCache = false;
-
-    updateProviderUI(provider, status, numericStatus, incidents);
-
-    const newsList = document.getElementById(`news-${provider}`);
-    const incidentItems = (incidents || []).map(inc => ({
-        type: 'incident',
-        title: inc.name,
-        link: inc.link,
-        source: 'Status Feed',
-        pubDate: new Date().toISOString()
-    }));
-
-    const newsItems = (data.news || []).map(item => ({
-        type: 'news',
-        title: item.title,
-        link: item.link,
-        source: item.source,
-        pubDate: item.pubDate
-    }));
-
-    const feedItems = [...incidentItems, ...newsItems].slice(0, 6);
-
-    if (feedItems.length > 0) {
-        newsList.innerHTML = feedItems.map(item => `
-            <li>
-                <a href="${item.link}" target="_blank" rel="noopener noreferrer">
-                    ${item.type === 'incident' ? '<span class="feed-pill">Incident</span>' : ''}
-                    <span class="news-title">${item.title}</span>
-                    <span class="news-meta">
-                        <span class="news-source">${item.source}</span>
-                        <span class="news-date">${new Date(item.pubDate).toLocaleDateString()}</span>
-                    </span>
-                </a>
-            </li>
-        `).join('');
+    if (isUnknown) {
+        tile.classList.add('unknown');
+        if (label) label.textContent = 'Unknown';
+    } else if (isHealthy) {
+        tile.classList.add('up');
+        if (label) label.textContent = 'Operational';
     } else {
-        newsList.innerHTML = '<li class="no-news">No recent incidents or news found</li>';
+        tile.classList.add('down');
+        if (label) label.textContent = 'Issues';
     }
-}
-
-function formatTimeAgo(date) {
-    if (!date) return 'Never';
-    const seconds = Math.floor((new Date() - date) / 1000);
-    if (seconds < 60) return `${seconds}s ago`;
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}m ago`;
-    const hours = Math.floor(minutes / 60);
-    return `${hours}h ago`;
-}
-
-function updateLastFetchTimers() {
-    ['aws', 'azure', 'gcp', 'cloudflare', 'akamai', 'fastly'].forEach(provider => {
-        const elem = document.getElementById(`lastfetch-${provider}`);
-        if (elem && state[provider].lastFetch) {
-            elem.innerText = formatTimeAgo(state[provider].lastFetch);
-        }
-    });
 }
 
 function updateGlobalStatus(data) {
@@ -321,25 +123,95 @@ function updateGlobalStatus(data) {
     const indicator = document.querySelector('.live-indicator');
 
     if (allHealthy) {
-        globalStatus.innerText = "All Systems Operational";
-        indicator.style.color = "#22c55e";
-        indicator.style.background = "rgba(34, 197, 94, 0.2)";
+        globalStatus.innerText = 'All Systems Operational';
+        indicator.style.color = '#22c55e';
+        indicator.style.background = 'rgba(34, 197, 94, 0.15)';
     } else {
-        globalStatus.innerText = "Service Disruptions Detected";
-        indicator.style.color = "#ef4444";
-        indicator.style.background = "rgba(239, 68, 68, 0.2)";
+        globalStatus.innerText = 'Service Disruptions Detected';
+        indicator.style.color = '#ef4444';
+        indicator.style.background = 'rgba(239, 68, 68, 0.15)';
     }
 }
 
-// Simulation Controls
-async function triggerSpike(provider, region = 'NA') {
+// --- Outage summary ---
+function updateOutageSummary(data) {
+    const el = document.getElementById('outage-text');
+    const section = document.getElementById('outage-summary');
+    if (!el || !section) return;
+
+    const issues = [];
+    for (const [slug, info] of Object.entries(data)) {
+        if (info.status && info.status !== 'Healthy' && info.status !== 'Unknown') {
+            const name = entityConfig[slug]?.name || slug;
+            issues.push(name);
+        }
+    }
+
+    section.classList.remove('has-issues', 'all-clear');
+
+    if (issues.length === 0) {
+        section.classList.add('all-clear');
+        el.innerHTML = '<strong>All clear</strong> — All monitored banks, cloud providers, and CDN services are operating normally.';
+    } else {
+        section.classList.add('has-issues');
+        const names = issues.map(n => `<span class="outage-name">${n}</span>`).join(', ');
+        el.innerHTML = `<strong>Active issues:</strong> ${names}`;
+    }
+}
+
+// --- Inline ask bar ---
+function initAskBar() {
+    const form = document.getElementById('ask-form');
+    const input = document.getElementById('ask-input');
+    const responseEl = document.getElementById('ask-response');
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const text = input.value.trim();
+        if (!text) return;
+
+        responseEl.classList.remove('hidden');
+        responseEl.classList.remove('guardrail');
+        responseEl.textContent = 'Thinking...';
+        responseEl.classList.add('loading');
+
+        chatHistory.push({ role: 'user', content: text });
+
+        try {
+            const res = await fetch(CHAT_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messages: chatHistory.slice(-10) })
+            });
+            const data = await res.json();
+
+            responseEl.textContent = data.reply;
+            responseEl.classList.remove('loading');
+
+            if (data.guardrail === 'input_blocked') {
+                responseEl.classList.add('guardrail');
+            }
+
+            chatHistory.push({ role: 'assistant', content: data.reply });
+        } catch (err) {
+            responseEl.textContent = 'Sorry, something went wrong. Please try again.';
+            responseEl.classList.remove('loading');
+        }
+
+        input.value = '';
+    });
+}
+
+// --- Simulation ---
+async function triggerSpike(provider) {
     try {
         await fetch('/simulate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider, region })
+            body: JSON.stringify({ provider, region: 'AS' })
         });
-        fetchData(); // Immediate update
+        await fetchData();
+        fetchHeadline();
     } catch (e) {
         console.error(e);
     }
@@ -348,12 +220,101 @@ async function triggerSpike(provider, region = 'NA') {
 async function resetAll() {
     try {
         await fetch('/reset', { method: 'POST' });
-        fetchData();
+        await fetchData();
+        fetchHeadline();
     } catch (e) {
         console.error(e);
     }
 }
 
-// Ensure controls are visible
-const controls = document.querySelector('.controls-area');
-if (controls) controls.style.display = 'block';
+// --- Breaking-news ticker ---
+async function fetchHeadline() {
+    const el = document.getElementById('ticker-text');
+    try {
+        const res = await fetch(HEADLINE_URL);
+        const data = await res.json();
+        if (data.headline) {
+            el.textContent = data.headline;
+            restartTickerAnimation();
+        }
+    } catch (e) {
+        console.error('Failed to fetch headline:', e);
+    }
+}
+
+function restartTickerAnimation() {
+    const el = document.getElementById('ticker-text');
+    el.style.animation = 'none';
+    void el.offsetHeight;
+    el.style.animation = '';
+}
+
+// --- Chat widget ---
+function initChat() {
+    const fab = document.getElementById('chat-fab');
+    const panel = document.getElementById('chat-panel');
+    const closeBtn = document.getElementById('chat-close');
+    const form = document.getElementById('chat-form');
+    const input = document.getElementById('chat-input');
+
+    fab.addEventListener('click', () => {
+        panel.classList.toggle('hidden');
+        if (!panel.classList.contains('hidden')) {
+            input.focus();
+        }
+    });
+
+    closeBtn.addEventListener('click', () => {
+        panel.classList.add('hidden');
+    });
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const text = input.value.trim();
+        if (!text) return;
+        input.value = '';
+
+        appendMessage('user', text);
+        chatHistory.push({ role: 'user', content: text });
+
+        const typingEl = appendMessage('assistant', '...');
+        typingEl.classList.add('typing');
+
+        try {
+            const res = await fetch(CHAT_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messages: chatHistory.slice(-10) })
+            });
+            const data = await res.json();
+
+            typingEl.querySelector('p').textContent = data.reply;
+            typingEl.classList.remove('typing');
+
+            if (data.guardrail === 'input_blocked') {
+                typingEl.classList.add('guardrail');
+            }
+
+            chatHistory.push({ role: 'assistant', content: data.reply });
+        } catch (err) {
+            typingEl.querySelector('p').textContent = 'Sorry, something went wrong. Please try again.';
+            typingEl.classList.remove('typing');
+        }
+    });
+}
+
+function appendMessage(role, text) {
+    const container = document.getElementById('chat-messages');
+    const div = document.createElement('div');
+    div.className = `chat-msg ${role}`;
+    div.innerHTML = `<p>${escapeHtml(text)}</p>`;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+    return div;
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
