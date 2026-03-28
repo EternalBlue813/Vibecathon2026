@@ -43,6 +43,7 @@ let cache = {
 };
 
 let simulations = {};
+let resetOverride = false;
 
 const CACHE_DURATION = parseInt(process.env.CACHE_DURATION) || 120 * 1000;
 const NEWS_FETCH_INTERVAL = 30 * 60 * 1000;
@@ -123,9 +124,42 @@ Reply with ONLY "yes" or "no".`
     };
 }
 
+function getSimulationMergedData() {
+    const merged = JSON.parse(JSON.stringify(cache.data));
+
+    if (resetOverride) {
+        for (const slug of ALL_SLUGS) {
+            if (merged[slug]) {
+                merged[slug].status = 'Healthy';
+                merged[slug].healthScore = 1;
+                merged[slug].incidents = [];
+                merged[slug].regionImpact = {};
+            }
+        }
+    }
+
+    for (const [provider, regions] of Object.entries(simulations)) {
+        if (!merged[provider]) merged[provider] = defaultEntry();
+        for (const [region, count] of Object.entries(regions)) {
+            merged[provider].regionImpact[region] = (merged[provider].regionImpact[region] || 0) + count;
+            merged[provider].status = 'Warning';
+            merged[provider].healthScore = Math.max(0, merged[provider].healthScore - (count * 0.05));
+            for (let i = 0; i < count; i++) {
+                merged[provider].incidents.unshift({
+                    name: `[SIMULATION] ${(ENTITY_CONFIG[provider]?.name || provider).toUpperCase()} Outage in ${region}`,
+                    link: '#',
+                    region
+                });
+            }
+        }
+    }
+    return merged;
+}
+
 function buildStatusContext() {
+    const data = getSimulationMergedData();
     const lines = [];
-    for (const [slug, info] of Object.entries(cache.data)) {
+    for (const [slug, info] of Object.entries(data)) {
         const name = ENTITY_CONFIG[slug]?.name || slug;
         const incidentCount = info.incidents?.length || 0;
         const incidentNames = (info.incidents || []).slice(0, 3).map(i => i.name).join('; ');
@@ -474,29 +508,10 @@ app.get('/api/config', (req, res) => {
 });
 
 app.get('/status', async (req, res) => {
-    const statusData = await updateStatus();
-    await updateNews();
+    await updateStatus();
+    updateNews().catch(err => console.error('[StatusSphere] Background news update error:', err.message));
 
-    const responseData = JSON.parse(JSON.stringify(statusData));
-
-    for (const [provider, regions] of Object.entries(simulations)) {
-        if (!responseData[provider]) {
-            responseData[provider] = defaultEntry();
-        }
-        for (const [region, count] of Object.entries(regions)) {
-            responseData[provider].regionImpact[region] = (responseData[provider].regionImpact[region] || 0) + count;
-            responseData[provider].status = 'Warning';
-            responseData[provider].healthScore = Math.max(0, responseData[provider].healthScore - (count * 0.05));
-            for (let i = 0; i < count; i++) {
-                responseData[provider].incidents.unshift({
-                    name: `[SIMULATION] ${(ENTITY_CONFIG[provider]?.name || provider).toUpperCase()} Outage in ${region}`,
-                    link: '#',
-                    region: region
-                });
-            }
-        }
-    }
-    res.json(responseData);
+    res.json(getSimulationMergedData());
 });
 
 app.post('/simulate', (req, res) => {
@@ -504,13 +519,17 @@ app.post('/simulate', (req, res) => {
     if (!ENTITY_CONFIG[provider]) {
         return res.status(400).json({ error: 'Unknown provider' });
     }
+    resetOverride = true;
     if (!simulations[provider]) simulations[provider] = {};
     simulations[provider][region || 'AS'] = (simulations[provider][region || 'AS'] || 0) + 5;
+    headlineCache = { text: '', timestamp: 0 };
     res.json({ success: true, simulations });
 });
 
 app.post('/reset', (req, res) => {
     simulations = {};
+    resetOverride = true;
+    headlineCache = { text: '', timestamp: 0 };
     res.json({ success: true });
 });
 
@@ -587,9 +606,10 @@ app.get('/api/headline', async (req, res) => {
 });
 
 function buildFallbackHeadline() {
+    const data = getSimulationMergedData();
     const issues = [];
     const healthy = [];
-    for (const [slug, info] of Object.entries(cache.data)) {
+    for (const [slug, info] of Object.entries(data)) {
         const name = ENTITY_CONFIG[slug]?.name || slug;
         if (info.status === 'Healthy') {
             healthy.push(name);

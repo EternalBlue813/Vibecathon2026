@@ -389,6 +389,12 @@ button.danger-btn {
     color: var(--danger-color);
 }
 
+button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
 /* ========== Detail Page ========== */
 .detail-container {
     max-width: 720px;
