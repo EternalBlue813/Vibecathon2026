@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
+const cheerio = require('cheerio');
 const cors = require('cors');
 const xml2js = require('xml2js');
 const path = require('path');
@@ -21,7 +22,10 @@ let cache = {
         gcp: { status: 'Unknown', incidents: [], news: [], regionImpact: {} },
         cloudflare: { status: 'Unknown', incidents: [], news: [], regionImpact: {} },
         akamai: { status: 'Unknown', incidents: [], news: [], regionImpact: {} },
-        fastly: { status: 'Unknown', incidents: [], news: [], regionImpact: {} }
+        fastly: { status: 'Unknown', incidents: [], news: [], regionImpact: {} },
+        dbs: { status: 'Unknown', incidents: [], news: [], regionImpact: {} },
+        ocbc: { status: 'Unknown', incidents: [], news: [], regionImpact: {} },
+        uob: { status: 'Unknown', incidents: [], news: [], regionImpact: {} }
     }
 };
 
@@ -99,6 +103,43 @@ async function fetchStatusPage(name, url) {
         const status = data.status.indicator === 'none' ? 'Healthy' : 'Warning';
 
         return { status, healthScore, incidents, regionImpact };
+    } catch (error) {
+        console.error(`${name} Fetch Error:`, error.message);
+        return { status: 'Unknown', healthScore: 0, incidents: [], regionImpact: {} };
+    }
+}
+
+async function fetchBankStatus(name, url) {
+    try {
+        const response = await axios.get(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            },
+            timeout: 10000
+        });
+        const $ = cheerio.load(response.data);
+        const text = $('body').text().toLowerCase();
+        
+        let status = 'Healthy';
+        let healthScore = 1;
+        const incidents = [];
+
+        const keywords = ['maintenance', 'disruption', 'outage', 'unavailable', 'experiencing issues'];
+        for (const kw of keywords) {
+            if (text.includes(kw) && (text.includes('apologise') || text.includes('sorry'))) {
+                status = 'Warning';
+                healthScore = 0.5;
+                incidents.push({
+                    name: `Possible ${kw} detected`,
+                    link: url,
+                    region: 'AS'
+                });
+                break;
+            }
+        }
+        
+        return { status, healthScore, incidents, regionImpact: incidents.length > 0 ? { 'AS': 1 } : {} };
     } catch (error) {
         console.error(`${name} Fetch Error:`, error.message);
         return { status: 'Unknown', healthScore: 0, incidents: [], regionImpact: {} };
@@ -206,15 +247,18 @@ async function fetchAzure() {
 }
 
 async function fetchAllStatus() {
-    const [aws, gcp, azure, cloudflare, akamai, fastly] = await Promise.all([
+    const [aws, gcp, azure, cloudflare, akamai, fastly, dbs, ocbc, uob] = await Promise.all([
         fetchAWS(),
         fetchGCP(),
         fetchAzure(),
         fetchStatusPage('Cloudflare', 'https://www.cloudflarestatus.com/api/v2/summary.json'),
         fetchStatusPage('Akamai', 'https://www.akamaistatus.com/api/v2/summary.json'),
-        fetchStatusPage('Fastly', 'https://www.fastlystatus.com/api/v2/summary.json')
+        fetchStatusPage('Fastly', 'https://www.fastlystatus.com/api/v2/summary.json'),
+        fetchBankStatus('DBS', 'https://www.dbs.com.sg/index/default.page'),
+        fetchBankStatus('OCBC', 'https://www.ocbc.com/personal-banking/'),
+        fetchBankStatus('UOB', 'https://www.uob.com.sg/personal/index.page')
     ]);
-    return { aws, gcp, azure, cloudflare, akamai, fastly };
+    return { aws, gcp, azure, cloudflare, akamai, fastly, dbs, ocbc, uob };
 }
 
 async function fetchAllNews() {
@@ -224,7 +268,10 @@ async function fetchAllNews() {
         gcp: await fetchNews('Google Cloud'),
         cloudflare: await fetchNews('Cloudflare'),
         akamai: await fetchNews('Akamai'),
-        fastly: await fetchNews('Fastly')
+        fastly: await fetchNews('Fastly'),
+        dbs: await fetchNews('DBS Bank Singapore'),
+        ocbc: await fetchNews('OCBC Bank Singapore'),
+        uob: await fetchNews('UOB Bank Singapore')
     };
 }
 
@@ -352,7 +399,7 @@ app.get('/history', async (req, res) => {
         return res.status(503).json({ error: 'Database not configured' });
     }
 
-    const providers = ['aws', 'azure', 'gcp', 'cloudflare', 'akamai', 'fastly'];
+    const providers = ['aws', 'azure', 'gcp', 'cloudflare', 'akamai', 'fastly', 'dbs', 'ocbc', 'uob'];
     const result = {};
 
     for (const provider of providers) {
