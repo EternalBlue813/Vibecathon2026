@@ -4,7 +4,7 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const cors = require('cors');
 const xml2js = require('xml2js');
-const { supabase, storeSnapshot, storeIncident, storeNews } = require('./supabase');
+const { supabase, storeSnapshot, storeIncident, storeNews, verifySupabaseConnection } = require('./supabase');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -228,6 +228,40 @@ const REGION_KEYWORDS = {
     'AF': ['af-', 'africa', 'cape town', 'johannesburg', 'cairo', 'lagos']
 };
 
+const BANK_BANNER_SELECTORS = [
+    '[role="alert"]',
+    '[aria-live="assertive"]',
+    '[aria-live="polite"]',
+    '.banner',
+    '.alert',
+    '.notification',
+    '.notice',
+    '[class*="banner"]',
+    '[class*="alert"]',
+    '[class*="notice"]',
+    '[class*="notification"]'
+];
+
+const BANK_DOWNTIME_PHRASES = [
+    'system unavailable',
+    'system is unavailable',
+    'services unavailable',
+    'service unavailable',
+    'service is unavailable',
+    'temporarily unavailable',
+    'currently unavailable',
+    'unable to access',
+    'system down',
+    'service down',
+    'services down',
+    'is down',
+    'are down',
+    'outage',
+    'major outage',
+    'degraded service',
+    'degraded performance'
+];
+
 function getRegion(text) {
     if (!text) return null;
     text = text.toLowerCase();
@@ -237,6 +271,27 @@ function getRegion(text) {
         }
     }
     return 'NA';
+}
+
+function normalizeText(text) {
+    return (text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function hasDowntimePhrase(text) {
+    const normalized = normalizeText(text);
+    if (!normalized) return false;
+    return BANK_DOWNTIME_PHRASES.some(phrase => normalized.includes(phrase));
+}
+
+function extractNotificationBannerText($) {
+    const parts = [];
+    for (const selector of BANK_BANNER_SELECTORS) {
+        $(selector).each((_, el) => {
+            const value = normalizeText($(el).text());
+            if (value) parts.push(value);
+        });
+    }
+    return parts.join(' ');
 }
 
 async function fetchNews(query) {
@@ -299,30 +354,35 @@ async function fetchBankStatus(name, url) {
             timeout: 10000
         });
         const $ = cheerio.load(response.data);
-        const text = $('body').text().toLowerCase();
-        
+        const bannerText = extractNotificationBannerText($);
+
         let status = 'Healthy';
         let healthScore = 1;
         const incidents = [];
 
-        const keywords = ['maintenance', 'disruption', 'outage', 'unavailable', 'experiencing issues'];
-        for (const kw of keywords) {
-            if (text.includes(kw) && (text.includes('apologise') || text.includes('sorry'))) {
-                status = 'Warning';
-                healthScore = 0.5;
-                incidents.push({
-                    name: `Possible ${kw} detected`,
-                    link: url,
-                    region: 'AS'
-                });
-                break;
-            }
+        if (hasDowntimePhrase(bannerText)) {
+            status = 'Warning';
+            healthScore = 0.3;
+            incidents.push({
+                name: 'Notification banner indicates service is down or unavailable',
+                link: url,
+                region: 'AS'
+            });
         }
-        
+
         return { status, healthScore, incidents, regionImpact: incidents.length > 0 ? { 'AS': 1 } : {} };
     } catch (error) {
         console.error(`${name} Fetch Error:`, error.message);
-        return { status: 'Unknown', healthScore: 0, incidents: [], regionImpact: {} };
+        return {
+            status: 'Warning',
+            healthScore: 0,
+            incidents: [{
+                name: `${name} website cannot be reached`,
+                link: url,
+                region: 'AS'
+            }],
+            regionImpact: { 'AS': 1 }
+        };
     }
 }
 
@@ -427,18 +487,26 @@ async function fetchAzure() {
 }
 
 async function fetchAllStatus() {
-    const [aws, gcp, azure, cloudflare, akamai, fastly, dbs, ocbc, uob] = await Promise.all([
+    const [aws, gcp, azure, cloudflare, akamai, dbs, ocbc, uob] = await Promise.all([
         fetchAWS(),
         fetchGCP(),
         fetchAzure(),
         fetchStatusPage('Cloudflare', 'https://www.cloudflarestatus.com/api/v2/summary.json'),
         fetchStatusPage('Akamai', 'https://www.akamaistatus.com/api/v2/summary.json'),
-        fetchStatusPage('Fastly', 'https://www.fastlystatus.com/api/v2/summary.json'),
         fetchBankStatus('DBS', 'https://www.dbs.com.sg/index/default.page'),
         fetchBankStatus('OCBC', 'https://www.ocbc.com/personal-banking/'),
         fetchBankStatus('UOB', 'https://www.uob.com.sg/personal/index.page')
     ]);
-    return { aws, gcp, azure, cloudflare, akamai, fastly, dbs, ocbc, uob };
+
+    const result = { aws, gcp, azure, cloudflare, akamai, dbs, ocbc, uob };
+
+    for (const slug of BANK_SLUGS) {
+        if (!result[slug]) {
+            result[slug] = { status: 'Healthy', healthScore: 1, incidents: [], regionImpact: {} };
+        }
+    }
+
+    return result;
 }
 
 async function fetchAllNews() {
@@ -450,6 +518,69 @@ async function fetchAllNews() {
         newsMap[slug] = await fetchNews(ENTITY_CONFIG[slug].name + ' bank');
     }
     return newsMap;
+}
+
+function getEntityKeywords(slug) {
+    const baseName = (ENTITY_CONFIG[slug]?.name || slug).toLowerCase();
+    const keywordMap = {
+        aws: ['aws', 'amazon web services', 'amazon'],
+        gcp: ['gcp', 'google cloud', 'google cloud platform'],
+        azure: ['azure', 'microsoft azure'],
+        cloudflare: ['cloudflare'],
+        akamai: ['akamai'],
+        dbs: ['dbs', 'development bank of singapore'],
+        ocbc: ['ocbc'],
+        uob: ['uob', 'united overseas bank'],
+        citi: ['citi', 'citibank'],
+        scb: ['scb', 'standard chartered'],
+        hsbc: ['hsbc'],
+        maybank: ['maybank'],
+        sxp: ['sxp', 'singapore exchange'],
+    };
+    return keywordMap[slug] || [baseName];
+}
+
+function isArticleAboutEntity(slug, article) {
+    const haystack = `${article?.title || ''} ${article?.source || ''} ${article?.link || ''}`.toLowerCase();
+    const keywords = getEntityKeywords(slug);
+    return keywords.some(keyword => haystack.includes(keyword));
+}
+
+function normalizeNewsForProvider(provider, articles) {
+    if (!Array.isArray(articles)) return [];
+    return articles.filter(article => isArticleAboutEntity(provider, article));
+}
+
+async function getLatestSnapshotId(provider) {
+    if (!supabase) return null;
+
+    const { data, error } = await supabase
+        .from('snapshots')
+        .select('id')
+        .eq('provider', provider)
+        .order('polled_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+    if (!error && data?.id) {
+        return data.id;
+    }
+
+    return await storeSnapshot(provider, 1, 'Healthy');
+}
+
+async function persistEntityNews(provider, articles) {
+    if (!supabase) return;
+
+    const relevantArticles = normalizeNewsForProvider(provider, articles);
+    if (relevantArticles.length === 0) return;
+
+    const snapshotId = await getLatestSnapshotId(provider);
+    if (!snapshotId) return;
+
+    for (const article of relevantArticles) {
+        await storeNews(snapshotId, provider, article.title, article.link, article.source, article.pubDate);
+    }
 }
 
 async function persistToDatabase(data) {
@@ -465,29 +596,10 @@ async function persistToDatabase(data) {
 }
 
 async function persistNewsToDatabase(newsData) {
-    const snapshotIds = {};
-
-    if (supabase) {
-        for (const provider of Object.keys(newsData)) {
-            const { data, error } = await supabase
-                .from('snapshots')
-                .select('id')
-                .eq('provider', provider)
-                .order('polled_at', { ascending: false })
-                .limit(1)
-                .maybeSingle();
-
-            if (!error && data?.id) {
-                snapshotIds[provider] = data.id;
-            }
-        }
-    }
+    if (!supabase) return;
 
     for (const [provider, articles] of Object.entries(newsData)) {
-        const snapshotId = snapshotIds[provider] || null;
-        for (const article of articles) {
-            await storeNews(snapshotId, provider, article.title, article.link, article.source, article.pubDate);
-        }
+        await persistEntityNews(provider, articles);
     }
 }
 
@@ -524,9 +636,10 @@ async function updateNews() {
     lastNewsFetch = now;
 
     for (const [provider, articles] of Object.entries(newsData)) {
-        if (Array.isArray(articles) && articles.length > 0) {
+        const relevantArticles = normalizeNewsForProvider(provider, articles);
+        if (relevantArticles.length > 0) {
             if (cache.data[provider]) {
-                cache.data[provider].news = articles;
+                cache.data[provider].news = relevantArticles;
             }
         }
     }
@@ -573,7 +686,7 @@ app.get('/history', async (req, res) => {
         return res.status(503).json({ error: 'Database not configured' });
     }
 
-    const providers = ['aws', 'azure', 'gcp', 'cloudflare', 'akamai', 'fastly', 'dbs', 'ocbc', 'uob'];
+    const providers = ALL_SLUGS;
     const result = {};
 
     for (const slug of ALL_SLUGS) {
@@ -605,7 +718,8 @@ app.get('/news/:entity', async (req, res) => {
         ? ENTITY_CONFIG[entity].name + ' bank'
         : ENTITY_CONFIG[entity].name;
 
-    const articles = await fetchNews(query);
+    const articles = normalizeNewsForProvider(entity, await fetchNews(query));
+    await persistEntityNews(entity, articles);
     res.json(articles);
 });
 
@@ -701,10 +815,20 @@ app.post('/api/chat', async (req, res) => {
     res.json({ reply, guardrail: null });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
     console.log(`[StatusSphere] Server running at http://localhost:${PORT}`);
     console.log(`[StatusSphere] Monitoring: ${ALL_SLUGS.join(', ')}`);
     console.log(`[StatusSphere] LLM: ${OPENROUTER_API_KEY ? OPENROUTER_MODEL : 'not configured (set OPENROUTER_API_KEY)'}`);
+    if (supabase) {
+        const dbStatus = await verifySupabaseConnection();
+        if (dbStatus.ok) {
+            console.log('[StatusSphere] Supabase: connected');
+        } else {
+            console.error(`[StatusSphere] Supabase: connection failed (${dbStatus.reason})`);
+        }
+    } else {
+        console.log('[StatusSphere] Supabase: not configured');
+    }
     console.log(`[StatusSphere] Status polling: every ${CACHE_DURATION / 1000} seconds`);
     console.log(`[StatusSphere] News polling: every ${NEWS_FETCH_INTERVAL / 60000} minutes`);
 });
