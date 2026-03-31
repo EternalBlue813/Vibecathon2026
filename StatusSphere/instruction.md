@@ -12,13 +12,13 @@ StatusSphere is a real-time infrastructure status monitoring dashboard that trac
 
 | Entity | Slug | Category | Status Source |
 |--------|------|----------|---------------|
-| DBS | dbs | Bank | Simulated (v1) |
-| OCBC | ocbc | Bank | Simulated (v1) |
-| UOB | uob | Bank | Simulated (v1) |
-| Citi | citi | Bank | Simulated (v1) |
-| SCB | scb | Bank | Simulated (v1) |
-| HSBC | hsbc | Bank | Simulated (v1) |
-| Maybank | maybank | Bank | Simulated (v1) |
+| DBS | dbs | Bank | Live URL scrape (`url` + `status_page_url`) |
+| OCBC | ocbc | Bank | Live URL scrape (`url` + `status_page_url`) |
+| UOB | uob | Bank | Live URL scrape (`url` + `status_page_url`) |
+| Citi | citi | Bank | Live URL scrape (`url` + `status_page_url`) |
+| SCB | scb | Bank | Live URL scrape (`url` + `status_page_url`) |
+| HSBC | hsbc | Bank | Live URL scrape (`url` + `status_page_url`) |
+| Maybank | maybank | Bank | Live URL scrape (`url` + `status_page_url`) |
 | AWS | aws | Cloud | AWS Health API |
 | Azure | azure | Cloud | Azure Status Feed (RSS) |
 | Google Cloud | gcp | Cloud | Google Cloud Status JSON |
@@ -61,6 +61,8 @@ StatusSphere is a real-time infrastructure status monitoring dashboard that trac
 | `public/style.css` | Shared stylesheet (dashboard + detail) |
 | `database/001-initial.sql` | Initial schema |
 | `database/002-add-banks.sql` | Migration to allow bank slugs |
+| `database/003-entities.sql` | Creates `entities` table and seed entities |
+| `database/004-fix-provider-constraint.sql` | Drops legacy provider CHECK and enforces FK to `entities.slug` |
 
 ---
 
@@ -80,8 +82,8 @@ StatusSphere is a real-time infrastructure status monitoring dashboard that trac
 | `fetchAWS()` | AWS Health API | UTF-16 encoded response |
 | `fetchAzure()` | Azure RSS Feed | XML format |
 | `fetchGCP()` | GCP Status JSON | Open incidents only |
-| `fetchStatusPage()` | Atlassian Statuspage API | Cloudflare, Akamai |
-| Banks | Simulated | Default Healthy; toggle via `/simulate` |
+| `fetchStatusPage()` | Atlassian Statuspage API | Generic CDN/Cloud status pages + 403 fallback |
+| `fetchBankStatus(entity)` | Bank website/status URLs | Extracts alerts/incidents from live page content |
 
 ### News Source
 
@@ -106,6 +108,28 @@ news_articles    -- Related news linked to snapshots
 
 - `001-initial.sql` — Creates tables, indexes, pg_cron cleanup
 - `002-add-banks.sql` — Extends provider CHECK to include bank slugs + 'Down' status
+- `003-entities.sql` — Creates `entities` table for dynamic scraping (replaces hardcoded config)
+- `004-fix-provider-constraint.sql` — Drops legacy provider CHECK and enforces `snapshots.provider -> entities.slug` foreign key
+
+### Running Migrations
+
+Run migrations via Supabase Dashboard SQL Editor or CLI:
+
+```bash
+# Option 1: Supabase Dashboard
+# 1. Go to https://supabase.com/dashboard
+# 2. Select your project → SQL Editor
+# 3. Run SQL in order: 003-entities.sql, then 004-fix-provider-constraint.sql
+
+# Option 2: Supabase CLI
+supabase db push
+```
+
+### SQL Migration Policy
+
+- Never edit old migration files once committed/applied.
+- For any schema/data change, create a new incremental file in `database/` (e.g. `005-...sql`).
+- Document the new migration in this file under **Migrations** and **Changelog**.
 
 ### Cleanup
 
@@ -119,11 +143,12 @@ news_articles    -- Related news linked to snapshots
 
 ### GET `/api/config`
 
-Returns the entity configuration map (slug → name, category, simulated flag).
+Returns the entity configuration map (slug → name, category).
+This endpoint reloads entities from Supabase before returning data.
 
 ### GET `/status`
 
-Returns current status for all entities including bank simulations.
+Returns current status for all entities from live scraping.
 
 **Response:**
 ```json
@@ -153,15 +178,11 @@ Returns latest 20 snapshots per entity from database.
 
 Returns fresh news articles for a specific entity (used by detail page).
 
-### POST `/simulate`
+### POST `/api/entities/reload`
 
-Injects fake outage for testing any entity.
+Forces server-side entity reload from Supabase without restarting the server.
 
-**Body:** `{ "provider": "dbs", "region": "AS" }`
-
-### POST `/reset`
-
-Clears all simulations.
+**Response:** `{ "success": true, "entities": <count>, "slugs": [...] }`
 
 ---
 
@@ -179,8 +200,8 @@ Page Load (Detail):
   Browser → GET /news/:entity → Populate news list
 
 Live Polling (every 2 min):
-  Dashboard: GET /status → Update tile states
-  Detail: GET /status → Update badge + push to chart
+  Dashboard: GET /api/config + GET /status → Reload latest entities + update tile states
+  Detail: GET /api/config + GET /status → Reload entity metadata + update badge/chart
 ```
 
 ---
@@ -200,18 +221,19 @@ Live Polling (every 2 min):
 
 ### Adding a New Bank / Provider
 
-1. Add entry to `ENTITY_CONFIG` in `server.js`
-2. If real fetcher needed, create fetch function and add to `fetchAllStatus()`
-3. Run `002-add-banks.sql` migration if new slug not in CHECK constraint
+1. Add entry to `entities` table in Supabase (via SQL or dashboard)
+2. Set `slug`, `name`, `type` (bank/cdn/cloud), `url`, `status_page_url`
+3. Server automatically fetches from DB on startup and scrapes dynamically
 4. Frontend tiles auto-generate from `/api/config`
 5. Update this document
 
-### Swapping Bank Simulation for Real Checks
+**Note:** No code changes needed - entities are now database-driven!
 
-1. Remove `simulated: true` from the bank entry in `ENTITY_CONFIG`
-2. Create a fetch function (e.g. `fetchDBS()`) that does HTTP HEAD/GET to the bank URL
-3. Add it to the `fetchAllStatus()` promise
-4. The dashboard and detail pages require no changes
+### Refreshing Entities Without Restart
+
+1. Update records in Supabase `entities` table
+2. Call `POST /api/entities/reload`
+3. Next dashboard/detail poll will pick up latest entities and labels
 
 ### Modifying Fetch Intervals
 
@@ -222,13 +244,16 @@ Live Polling (every 2 min):
 
 ## Last Updated
 
-Document version: 2.0
-Last updated: 2026-03-27
+Document version: 3.2
+Last updated: 2026-03-31
 
 ## Changelog
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 3.2 | 2026-03-31 | Removed all simulation flows, added live bank scraping from Supabase URLs, added `POST /api/entities/reload`, frontend now refreshes entity config on each fetch, documented SQL migration policy |
+| 3.1 | 2026-03-31 | Fixed dynamic scraping: removed duplicate hardcoded status fetcher, improved bank incident extraction, added Fastly 403 fallback, added provider constraint fix migration |
+| 3.0 | 2026-03-31 | Entities now database-driven: added `entities` table, dynamic scraping from DB, removed hardcoded config |
 | 2.0 | 2026-03-27 | Redesign: mobile-first tile dashboard, detail page (chart, screenshot, AI summary, news), added 7 banks (simulated), removed world map, removed Fastly from UI |
 | 1.2 | 2026-03-25 | Fixed news persistence timing, retained last news when fetch is empty, moved incidents to count + merged feed items |
 | 1.1 | 2026-03-25 | Added `/history` endpoint, browser caching, database-first data loading |

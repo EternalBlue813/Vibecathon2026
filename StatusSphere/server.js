@@ -13,26 +13,109 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
-const ENTITY_CONFIG = {
-    dbs:        { name: 'DBS',        category: 'bank', simulated: true },
-    ocbc:       { name: 'OCBC',       category: 'bank', simulated: true },
-    uob:        { name: 'UOB',        category: 'bank', simulated: true },
-    citi:       { name: 'Citi',       category: 'bank', simulated: true },
-    scb:        { name: 'SCB',        category: 'bank', simulated: true },
-    hsbc:       { name: 'HSBC',       category: 'bank', simulated: true },
-    maybank:    { name: 'Maybank',    category: 'bank', simulated: true },
-    sxp:        { name: 'SXP',        category: 'bank', simulated: true },
-    aws:        { name: 'AWS',        category: 'cloud' },
-    azure:      { name: 'Azure',      category: 'cloud' },
-    gcp:        { name: 'Google Cloud', category: 'cloud' },
-    cloudflare: { name: 'Cloudflare', category: 'cdn' },
-    akamai:     { name: 'Akamai',     category: 'cdn' },
-};
+let ENTITY_CONFIG = {};
+let ALL_SLUGS = [];
+let BANK_SLUGS = [];
+let CLOUD_SLUGS = [];
+let CDN_SLUGS = [];
+let ENTITY_REVISION = '';
 
-const ALL_SLUGS = Object.keys(ENTITY_CONFIG);
-const BANK_SLUGS = ALL_SLUGS.filter(s => ENTITY_CONFIG[s].category === 'bank');
-const CLOUD_SLUGS = ALL_SLUGS.filter(s => ENTITY_CONFIG[s].category === 'cloud');
-const CDN_SLUGS = ALL_SLUGS.filter(s => ENTITY_CONFIG[s].category === 'cdn');
+function setEntities(entities) {
+    const orderedEntities = [...entities].sort((a, b) => a.slug.localeCompare(b.slug));
+    const config = {};
+    const bank = [];
+    const cloud = [];
+    const cdn = [];
+
+    for (const e of orderedEntities) {
+        config[e.slug] = { name: e.name, category: e.type };
+        if (e.type === 'bank') bank.push(e.slug);
+        if (e.type === 'cloud') cloud.push(e.slug);
+        if (e.type === 'cdn') cdn.push(e.slug);
+    }
+
+    ENTITY_CONFIG = config;
+    ALL_SLUGS = orderedEntities.map((e) => e.slug);
+    BANK_SLUGS = bank;
+    CLOUD_SLUGS = cloud;
+    CDN_SLUGS = cdn;
+    ENTITY_REVISION = orderedEntities
+        .map((e) => `${e.slug}:${e.name}:${e.type}:${e.url || ''}:${e.status_page_url || ''}`)
+        .join('|');
+}
+
+async function loadEntitiesFromDb() {
+    if (!supabase) {
+        console.warn('[Entities] Supabase not configured, entity config unavailable');
+        setEntities([]);
+        return [];
+    }
+    try {
+        const { data, error } = await supabase
+            .from('entities')
+            .select('slug, name, type, url, status_page_url, is_active')
+            .eq('is_active', true);
+        
+        if (error) throw error;
+        
+        setEntities(data || []);
+        if (ALL_SLUGS.length > 0) {
+            console.log('[Entities] Loaded from DB:', ALL_SLUGS.join(', '));
+        } else {
+            console.warn('[Entities] No active entities found in DB');
+        }
+
+        return data || [];
+    } catch (e) {
+        console.error('[Entities] Failed to load from DB:', e.message);
+        setEntities([]);
+        return [];
+    }
+}
+
+function buildStatusSummaryUrl(baseUrl) {
+    if (!baseUrl) return null;
+    const trimmed = baseUrl.replace(/\/$/, '');
+    if (trimmed.endsWith('/api/v2/summary.json')) return trimmed;
+    return `${trimmed}/api/v2/summary.json`;
+}
+
+async function scrapeEntityStatus(entity) {
+    const { slug, type, url, status_page_url } = entity;
+
+    switch (slug) {
+        case 'aws': return fetchAWS();
+        case 'gcp': return fetchGCP();
+        case 'azure': return fetchAzure();
+        default:
+            if (type === 'bank') {
+                return fetchBankStatus(entity);
+            }
+            if (type === 'cdn' && status_page_url) {
+                return fetchStatusPage(entity.name, buildStatusSummaryUrl(status_page_url));
+            }
+            if (type === 'cloud') {
+                return fetchStatusPage(entity.name, status_page_url || url);
+            }
+            return { status: 'Unknown', healthScore: 0, incidents: [], regionImpact: {} };
+    }
+}
+
+async function fetchAllStatus() {
+    const entities = await loadEntitiesFromDb();
+    
+    if (!entities || entities.length === 0) {
+        return {};
+    }
+
+    const statusPromises = entities.map(async (entity) => {
+        const result = await scrapeEntityStatus(entity);
+        return [entity.slug, result];
+    });
+
+    const results = await Promise.all(statusPromises);
+    return Object.fromEntries(results);
+}
 
 function defaultEntry() {
     return { status: 'Unknown', healthScore: 1, incidents: [], news: [], regionImpact: {} };
@@ -40,11 +123,34 @@ function defaultEntry() {
 
 let cache = {
     timestamp: 0,
-    data: Object.fromEntries(ALL_SLUGS.map(s => [s, defaultEntry()]))
+    data: {}
 };
 
-let simulations = {};
-let resetOverride = false;
+function initializeCache() {
+    cache.data = Object.fromEntries(ALL_SLUGS.map(s => [s, defaultEntry()]));
+}
+
+function synchronizeCacheEntries() {
+    const synced = {};
+    for (const slug of ALL_SLUGS) {
+        synced[slug] = cache.data[slug] || defaultEntry();
+    }
+    cache.data = synced;
+}
+
+async function reloadEntities() {
+    const before = ENTITY_REVISION;
+    const entities = await loadEntitiesFromDb();
+
+    synchronizeCacheEntries();
+
+    const after = ENTITY_REVISION;
+    if (before !== after) {
+        cache.timestamp = 0;
+    }
+
+    return entities;
+}
 
 const CACHE_DURATION = parseInt(process.env.CACHE_DURATION) || 120 * 1000;
 const NEWS_FETCH_INTERVAL = 30 * 60 * 1000;
@@ -125,40 +231,12 @@ Reply with ONLY "yes" or "no".`
     };
 }
 
-function getSimulationMergedData() {
-    const merged = JSON.parse(JSON.stringify(cache.data));
-
-    if (resetOverride) {
-        for (const slug of ALL_SLUGS) {
-            if (merged[slug]) {
-                merged[slug].status = 'Healthy';
-                merged[slug].healthScore = 1;
-                merged[slug].incidents = [];
-                merged[slug].regionImpact = {};
-            }
-        }
-    }
-
-    for (const [provider, regions] of Object.entries(simulations)) {
-        if (!merged[provider]) merged[provider] = defaultEntry();
-        for (const [region, count] of Object.entries(regions)) {
-            merged[provider].regionImpact[region] = (merged[provider].regionImpact[region] || 0) + count;
-            merged[provider].status = 'Warning';
-            merged[provider].healthScore = Math.max(0, merged[provider].healthScore - (count * 0.05));
-            for (let i = 0; i < count; i++) {
-                merged[provider].incidents.unshift({
-                    name: `[SIMULATION] ${(ENTITY_CONFIG[provider]?.name || provider).toUpperCase()} Outage in ${region}`,
-                    link: '#',
-                    region
-                });
-            }
-        }
-    }
-    return merged;
+function getCurrentStatusData() {
+    return JSON.parse(JSON.stringify(cache.data));
 }
 
 function buildStatusContext() {
-    const data = getSimulationMergedData();
+    const data = getCurrentStatusData();
     const lines = [];
     for (const [slug, info] of Object.entries(data)) {
         const name = ENTITY_CONFIG[slug]?.name || slug;
@@ -260,8 +338,20 @@ async function fetchNews(query) {
 }
 
 async function fetchStatusPage(name, url) {
+    if (!url) {
+        return { status: 'Unknown', healthScore: 0, incidents: [], regionImpact: {} };
+    }
+
+    const requestConfig = {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json,text/plain,*/*'
+        },
+        timeout: 15000
+    };
+
     try {
-        const response = await axios.get(url);
+        const response = await axios.get(url, requestConfig);
         const data = response.data;
         const incidents = (data.incidents || []).map(i => ({
             name: i.name,
@@ -284,45 +374,159 @@ async function fetchStatusPage(name, url) {
 
         return { status, healthScore, incidents, regionImpact };
     } catch (error) {
+        const statusCode = error.response?.status;
+        if (statusCode === 403 && url.includes('/api/v2/summary.json')) {
+            try {
+                const baseUrl = url.replace('/api/v2/summary.json', '');
+                const [statusResponse, unresolvedResponse] = await Promise.all([
+                    axios.get(`${baseUrl}/api/v2/status.json`, requestConfig),
+                    axios.get(`${baseUrl}/api/v2/incidents/unresolved.json`, requestConfig)
+                ]);
+
+                const statusPayload = statusResponse.data?.status || {};
+                const unresolved = unresolvedResponse.data?.incidents || [];
+                const incidents = unresolved.map((i) => ({
+                    name: i.name,
+                    link: i.shortlink || `${baseUrl}/incidents/${i.id}`,
+                    region: getRegion(`${i.name} ${i.impact || ''}`)
+                }));
+                const regionImpact = {};
+                for (const incident of incidents) {
+                    if (incident.region) {
+                        regionImpact[incident.region] = (regionImpact[incident.region] || 0) + 1;
+                    }
+                }
+
+                return {
+                    status: statusPayload.indicator === 'none' ? 'Healthy' : 'Warning',
+                    healthScore: incidents.length > 0 ? Math.max(0, 1 - incidents.length * 0.1) : 1,
+                    incidents,
+                    regionImpact
+                };
+            } catch {
+                console.warn(`${name} Fetch Warning: blocked by status API (403)`);
+                return { status: 'Unknown', healthScore: 0, incidents: [], regionImpact: {} };
+            }
+        }
         console.error(`${name} Fetch Error:`, error.message);
         return { status: 'Unknown', healthScore: 0, incidents: [], regionImpact: {} };
     }
 }
 
-async function fetchBankStatus(name, url) {
+function extractBankIssueByKeywords(rawText) {
+    const triggerWords = [
+        'maintenance', 'disruption', 'outage', 'unavailable', 'degraded',
+        'intermittent', 'latency', 'service interruption', 'scheduled downtime',
+        'technical difficulties', 'experiencing issues'
+    ];
+    const lines = rawText
+        .split(/[\n\r\.]+/)
+        .map((line) => line.replace(/\s+/g, ' ').trim())
+        .filter(Boolean);
+
+    for (const line of lines) {
+        const lower = line.toLowerCase();
+        if (triggerWords.some((kw) => lower.includes(kw))) {
+            return line.slice(0, 220);
+        }
+    }
+    return null;
+}
+
+function parseJsonObject(text) {
+    if (!text) return null;
     try {
-        const response = await axios.get(url, {
+        return JSON.parse(text);
+    } catch {
+        const match = text.match(/\{[\s\S]*\}/);
+        if (!match) return null;
+        try {
+            return JSON.parse(match[0]);
+        } catch {
+            return null;
+        }
+    }
+}
+
+async function detectBankIssueWithLLM(bankName, signalText) {
+    if (!signalText || !signalText.trim()) {
+        return { hasIssue: false, summary: '' };
+    }
+
+    if (!OPENROUTER_API_KEY) {
+        const fallback = extractBankIssueByKeywords(signalText);
+        return { hasIssue: Boolean(fallback), summary: fallback || '' };
+    }
+
+    const truncated = signalText.slice(0, 6000);
+    const verdict = await callLLM([
+        {
+            role: 'system',
+            content: 'You classify bank status-page content. Decide if there is an active service problem. Return ONLY JSON with keys: hasIssue (boolean), summary (string <= 180 chars). hasIssue=true only for active incidents, maintenance, outages, disruptions, service degradation, or login/access problems. Do not infer from generic marketing text.'
+        },
+        {
+            role: 'user',
+            content: `Bank: ${bankName}\nStatus page content:\n${truncated}`
+        }
+    ], 120);
+
+    const parsed = parseJsonObject(verdict);
+    if (!parsed || typeof parsed.hasIssue !== 'boolean') {
+        const fallback = extractBankIssueByKeywords(signalText);
+        return { hasIssue: Boolean(fallback), summary: fallback || '' };
+    }
+
+    return {
+        hasIssue: parsed.hasIssue,
+        summary: typeof parsed.summary === 'string' ? parsed.summary.slice(0, 220) : ''
+    };
+}
+
+async function fetchBankStatus(entity) {
+    const { name, url, status_page_url } = entity;
+    const statusUrl = status_page_url || url;
+    if (!statusUrl) {
+        return { status: 'Warning', healthScore: 0.2, incidents: [{ name: 'Status page URL is missing', link: '#', region: 'AS' }], regionImpact: { AS: 1 } };
+    }
+
+    try {
+        const response = await axios.get(statusUrl, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
             },
-            timeout: 10000
+            timeout: 12000
         });
-        const $ = cheerio.load(response.data);
-        const text = $('body').text().toLowerCase();
-        
-        let status = 'Healthy';
-        let healthScore = 1;
-        const incidents = [];
 
-        const keywords = ['maintenance', 'disruption', 'outage', 'unavailable', 'experiencing issues'];
-        for (const kw of keywords) {
-            if (text.includes(kw) && (text.includes('apologise') || text.includes('sorry'))) {
-                status = 'Warning';
-                healthScore = 0.5;
-                incidents.push({
-                    name: `Possible ${kw} detected`,
-                    link: url,
-                    region: 'AS'
-                });
-                break;
-            }
+        const $ = cheerio.load(response.data);
+        const signalText = [
+            $('title').text(),
+            $('h1, h2, h3, h4').text(),
+            $('.alert, .notice, .message, .banner, .warning, [role="alert"]').text(),
+            $('body').text()
+        ].join('\n');
+
+        const llmResult = await detectBankIssueWithLLM(name, signalText);
+        if (!llmResult.hasIssue) {
+            return { status: 'Healthy', healthScore: 1, incidents: [], regionImpact: {} };
         }
-        
-        return { status, healthScore, incidents, regionImpact: incidents.length > 0 ? { 'AS': 1 } : {} };
+
+        const issueName = llmResult.summary || 'Possible bank service issue detected from status page';
+        return {
+            status: 'Warning',
+            healthScore: 0.55,
+            incidents: [{ name: issueName, link: statusUrl, region: getRegion(signalText) || 'AS' }],
+            regionImpact: { AS: 1 }
+        };
     } catch (error) {
-        console.error(`${name} Fetch Error:`, error.message);
-        return { status: 'Unknown', healthScore: 0, incidents: [], regionImpact: {} };
+        const code = error.response?.status;
+        const details = code ? `HTTP ${code}` : error.message;
+        return {
+            status: 'Warning',
+            healthScore: 0.15,
+            incidents: [{ name: `Status page unreachable (${details})`, link: statusUrl, region: 'AS' }],
+            regionImpact: { AS: 1 }
+        };
     }
 }
 
@@ -426,28 +630,18 @@ async function fetchAzure() {
     }
 }
 
-async function fetchAllStatus() {
-    const [aws, gcp, azure, cloudflare, akamai, fastly, dbs, ocbc, uob] = await Promise.all([
-        fetchAWS(),
-        fetchGCP(),
-        fetchAzure(),
-        fetchStatusPage('Cloudflare', 'https://www.cloudflarestatus.com/api/v2/summary.json'),
-        fetchStatusPage('Akamai', 'https://www.akamaistatus.com/api/v2/summary.json'),
-        fetchStatusPage('Fastly', 'https://www.fastlystatus.com/api/v2/summary.json'),
-        fetchBankStatus('DBS', 'https://www.dbs.com.sg/index/default.page'),
-        fetchBankStatus('OCBC', 'https://www.ocbc.com/personal-banking/'),
-        fetchBankStatus('UOB', 'https://www.uob.com.sg/personal/index.page')
-    ]);
-    return { aws, gcp, azure, cloudflare, akamai, fastly, dbs, ocbc, uob };
-}
-
 async function fetchAllNews() {
+    if (ALL_SLUGS.length === 0) {
+        return {};
+    }
     const newsMap = {};
     for (const slug of [...CLOUD_SLUGS, ...CDN_SLUGS]) {
-        newsMap[slug] = await fetchNews(ENTITY_CONFIG[slug].name);
+        const name = ENTITY_CONFIG[slug]?.name || slug;
+        newsMap[slug] = await fetchNews(name);
     }
     for (const slug of BANK_SLUGS) {
-        newsMap[slug] = await fetchNews(ENTITY_CONFIG[slug].name + ' bank');
+        const name = ENTITY_CONFIG[slug]?.name || slug;
+        newsMap[slug] = await fetchNews(name + ' bank');
     }
     return newsMap;
 }
@@ -538,34 +732,27 @@ async function updateNews() {
 
 // --- API Routes ---
 
-app.get('/api/config', (req, res) => {
+app.get('/api/config', async (req, res) => {
+    try {
+        await reloadEntities();
+    } catch (err) {
+        console.error('[Entities] Reload failed:', err.message);
+    }
     res.json(ENTITY_CONFIG);
 });
 
 app.get('/status', async (req, res) => {
+    await reloadEntities();
     await updateStatus();
     updateNews().catch(err => console.error('[StatusSphere] Background news update error:', err.message));
 
-    res.json(getSimulationMergedData());
+    res.json(getCurrentStatusData());
 });
 
-app.post('/simulate', (req, res) => {
-    const { provider, region } = req.body;
-    if (!ENTITY_CONFIG[provider]) {
-        return res.status(400).json({ error: 'Unknown provider' });
-    }
-    resetOverride = true;
-    if (!simulations[provider]) simulations[provider] = {};
-    simulations[provider][region || 'AS'] = (simulations[provider][region || 'AS'] || 0) + 5;
+app.post('/api/entities/reload', async (req, res) => {
+    await reloadEntities();
     headlineCache = { text: '', timestamp: 0 };
-    res.json({ success: true, simulations });
-});
-
-app.post('/reset', (req, res) => {
-    simulations = {};
-    resetOverride = true;
-    headlineCache = { text: '', timestamp: 0 };
-    res.json({ success: true });
+    res.json({ success: true, entities: ALL_SLUGS.length, slugs: ALL_SLUGS });
 });
 
 app.get('/history', async (req, res) => {
@@ -642,7 +829,7 @@ app.get('/api/headline', async (req, res) => {
 });
 
 function buildFallbackHeadline() {
-    const data = getSimulationMergedData();
+    const data = getCurrentStatusData();
     const issues = [];
     const healthy = [];
     for (const [slug, info] of Object.entries(data)) {
@@ -701,7 +888,12 @@ app.post('/api/chat', async (req, res) => {
     res.json({ reply, guardrail: null });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
+    setEntities([]);
+    initializeCache();
+
+    await reloadEntities();
+    
     console.log(`[StatusSphere] Server running at http://localhost:${PORT}`);
     console.log(`[StatusSphere] Monitoring: ${ALL_SLUGS.join(', ')}`);
     console.log(`[StatusSphere] LLM: ${OPENROUTER_API_KEY ? OPENROUTER_MODEL : 'not configured (set OPENROUTER_API_KEY)'}`);
