@@ -7,6 +7,7 @@ const HEADLINE_INTERVAL = 120000;
 
 let entityConfig = {};
 let chatHistory = [];
+let configSignature = '';
 
 const GRID_MAP = {
     bank:  'grid-banks',
@@ -16,9 +17,7 @@ const GRID_MAP = {
 
 // --- Init ---
 document.addEventListener('DOMContentLoaded', async () => {
-    await loadConfig();
-    buildTiles();
-    buildSimButtons();
+    await refreshConfigIfChanged();
     await fetchData();
     setInterval(fetchData, POLL_INTERVAL);
 
@@ -40,7 +39,21 @@ async function loadConfig() {
     }
 }
 
-function buildTiles() {
+function getConfigSignature(config) {
+    return Object.entries(config)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([slug, cfg]) => `${slug}:${cfg.name}:${cfg.category}`)
+        .join('|');
+}
+
+function renderTiles() {
+    for (const gridId of Object.values(GRID_MAP)) {
+        const grid = document.getElementById(gridId);
+        if (grid) {
+            grid.innerHTML = '';
+        }
+    }
+
     for (const [slug, cfg] of Object.entries(entityConfig)) {
         const gridId = GRID_MAP[cfg.category];
         const grid = document.getElementById(gridId);
@@ -60,28 +73,19 @@ function buildTiles() {
     }
 }
 
-function buildSimButtons() {
-    const group = document.getElementById('sim-buttons');
-    if (!group) return;
-
-    for (const [slug, cfg] of Object.entries(entityConfig)) {
-        const btn = document.createElement('button');
-        btn.className = 'danger-btn';
-        btn.textContent = `Down ${cfg.name}`;
-        btn.addEventListener('click', () => triggerSpike(slug, btn));
-        group.appendChild(btn);
+async function refreshConfigIfChanged() {
+    await loadConfig();
+    const nextSignature = getConfigSignature(entityConfig);
+    if (nextSignature !== configSignature) {
+        configSignature = nextSignature;
+        renderTiles();
     }
-
-    const resetBtn = document.createElement('button');
-    resetBtn.className = 'secondary';
-    resetBtn.textContent = 'Reset All';
-    resetBtn.addEventListener('click', () => resetAll(resetBtn));
-    group.appendChild(resetBtn);
 }
 
 // --- Status polling ---
 async function fetchData() {
     try {
+        await refreshConfigIfChanged();
         const response = await fetch(API_URL);
         const data = await response.json();
 
@@ -200,52 +204,6 @@ function initAskBar() {
 
         input.value = '';
     });
-}
-
-// --- Simulation ---
-async function triggerSpike(provider, btn) {
-    if (btn) {
-        btn.disabled = true;
-        btn.textContent = 'Simulating...';
-    }
-    try {
-        const res = await fetch('/simulate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider, region: 'AS' })
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        await fetchData();
-        fetchHeadline();
-    } catch (e) {
-        console.error(e);
-    } finally {
-        if (btn) {
-            const name = entityConfig[provider]?.name || provider;
-            btn.disabled = false;
-            btn.textContent = `Down ${name}`;
-        }
-    }
-}
-
-async function resetAll(btn) {
-    if (btn) {
-        btn.disabled = true;
-        btn.textContent = 'Resetting...';
-    }
-    try {
-        const res = await fetch('/reset', { method: 'POST' });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        await fetchData();
-        fetchHeadline();
-    } catch (e) {
-        console.error(e);
-    } finally {
-        if (btn) {
-            btn.disabled = false;
-            btn.textContent = 'Reset All';
-        }
-    }
 }
 
 // --- Breaking-news ticker ---

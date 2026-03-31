@@ -8,6 +8,20 @@ let chart = null;
 let entitySlug = null;
 let entityMeta = null;
 
+async function refreshEntityMeta() {
+    try {
+        const cfgRes = await fetch(CONFIG_URL);
+        const config = await cfgRes.json();
+        entityMeta = config[entitySlug] || null;
+    } catch (e) {
+        console.error('Failed to load config', e);
+    }
+
+    const name = entityMeta?.name || entitySlug;
+    document.getElementById('entity-name').textContent = name;
+    document.title = `StatusSphere | ${name}`;
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     const params = new URLSearchParams(window.location.search);
     entitySlug = params.get('entity');
@@ -17,17 +31,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
-    try {
-        const cfgRes = await fetch(CONFIG_URL);
-        const config = await cfgRes.json();
-        entityMeta = config[entitySlug];
-    } catch (e) {
-        console.error('Failed to load config', e);
-    }
-
-    const name = entityMeta?.name || entitySlug;
-    document.getElementById('entity-name').textContent = name;
-    document.title = `StatusSphere | ${name}`;
+    await refreshEntityMeta();
 
     initChart();
     await loadHistory();
@@ -113,6 +117,7 @@ async function loadHistory() {
 
 async function fetchStatus() {
     try {
+        await refreshEntityMeta();
         const res = await fetch(STATUS_URL);
         const data = await res.json();
         const info = data[entitySlug];
