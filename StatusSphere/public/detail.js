@@ -91,27 +91,51 @@ document.addEventListener('DOMContentLoaded', async () => {
     setInterval(fetchScreenshot, SCREENSHOT_POLL_INTERVAL);
 });
 
+function formatTimestamp(isoString) {
+    if (!isoString) return '';
+    const d = new Date(isoString);
+    if (Number.isNaN(d.getTime())) return '';
+    const mon = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const hr = String(d.getHours()).padStart(2, '0');
+    const min = String(d.getMinutes()).padStart(2, '0');
+    return `${mon}/${day} ${hr}:${min}`;
+}
+
+function scoreToColor(v) {
+    if (v >= 0.9) return '#22c55e';
+    if (v >= 0.3) return '#f59e0b';
+    return '#ef4444';
+}
+
 function initChart() {
     const ctx = document.getElementById('history-chart').getContext('2d');
-
-    const gradient = ctx.createLinearGradient(0, 0, 0, 220);
-    gradient.addColorStop(0, 'rgba(56, 189, 248, 0.4)');
-    gradient.addColorStop(1, 'rgba(56, 189, 248, 0.0)');
 
     chart = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: Array(MAX_HISTORY).fill(''),
+            labels: [],
             datasets: [{
                 label: 'Health Score',
-                data: Array(MAX_HISTORY).fill(1),
-                borderColor: '#38bdf8',
-                backgroundColor: gradient,
+                data: [],
+                borderColor: '#64748b',
+                backgroundColor: 'rgba(100,116,139,0.08)',
                 borderWidth: 2,
-                pointRadius: 3,
-                pointBackgroundColor: '#38bdf8',
+                pointRadius: 5,
+                pointHoverRadius: 7,
+                pointBackgroundColor: [],
+                pointBorderColor: [],
+                pointBorderWidth: 1.5,
                 stepped: true,
-                fill: true
+                fill: true,
+                segment: {
+                    borderColor(ctx) {
+                        const prev = ctx.p0.parsed.y;
+                        const curr = ctx.p1.parsed.y;
+                        const worst = Math.min(prev, curr);
+                        return scoreToColor(worst);
+                    }
+                }
             }]
         },
         options: {
@@ -121,20 +145,37 @@ function initChart() {
                 legend: { display: false },
                 tooltip: {
                     callbacks: {
-                        label: (ctx) => ctx.parsed.y >= 0.9 ? 'UP' : 'DOWN'
+                        label(ctx) {
+                            const v = ctx.parsed.y;
+                            if (v >= 0.9) return 'Healthy';
+                            if (v >= 0.3) return 'Intermittent';
+                            return 'Down';
+                        }
                     }
                 }
             },
             scales: {
-                x: { display: false },
+                x: {
+                    display: true,
+                    ticks: {
+                        color: '#64748b',
+                        font: { size: 9 },
+                        maxRotation: 45,
+                        autoSkip: true,
+                        maxTicksLimit: 8,
+                    },
+                    grid: { color: 'rgba(255, 255, 255, 0.04)' }
+                },
                 y: {
                     display: true,
                     min: 0,
-                    max: 1.2,
+                    max: 1.1,
                     ticks: {
+                        stepSize: 0.5,
                         callback(value) {
-                            if (value === 1) return 'UP';
-                            if (value === 0) return 'DOWN';
+                            if (value === 1) return 'Healthy';
+                            if (value === 0.5) return 'Intermittent';
+                            if (value === 0) return 'Down';
                             return '';
                         },
                         color: '#64748b',
@@ -155,9 +196,9 @@ async function loadHistory() {
 
         const snapshots = data[entitySlug];
         if (snapshots && snapshots.length > 0) {
-            const scores = snapshots.map(s => s.health_score);
-            chart.data.datasets[0].data = scores;
-            colorChart(scores[scores.length - 1]);
+            chart.data.labels = snapshots.map(s => formatTimestamp(s.polled_at));
+            chart.data.datasets[0].data = snapshots.map(s => s.health_score);
+            colorChart();
             chart.update();
         }
     } catch (e) {
@@ -180,10 +221,13 @@ async function fetchStatus() {
         updateLastFetch(entityMeta?.lastFetch || null);
 
         const score = info.healthScore !== undefined ? info.healthScore : (info.status === 'Healthy' ? 1 : 0);
-        const chartData = chart.data.datasets[0].data;
-        chartData.push(score);
-        if (chartData.length > MAX_HISTORY) chartData.shift();
-        colorChart(score);
+        chart.data.labels.push(formatTimestamp(new Date().toISOString()));
+        chart.data.datasets[0].data.push(score);
+        if (chart.data.datasets[0].data.length > MAX_HISTORY) {
+            chart.data.datasets[0].data.shift();
+            chart.data.labels.shift();
+        }
+        colorChart();
         chart.update();
     } catch (e) {
         console.error('Failed to fetch status:', e);
@@ -202,17 +246,10 @@ function updateLastFetch(fetchedAt) {
     el.textContent = Number.isNaN(dt.getTime()) ? fetchedAt : dt.toLocaleString();
 }
 
-function colorChart(latestScore) {
-    const isUp = latestScore >= 0.9;
-    const color = isUp ? '#22c55e' : '#ef4444';
-    chart.data.datasets[0].borderColor = color;
-    chart.data.datasets[0].pointBackgroundColor = color;
-
-    const ctx = chart.ctx;
-    const gradient = ctx.createLinearGradient(0, 0, 0, 220);
-    gradient.addColorStop(0, isUp ? 'rgba(34, 197, 94, 0.4)' : 'rgba(239, 68, 68, 0.4)');
-    gradient.addColorStop(1, 'rgba(0,0,0,0)');
-    chart.data.datasets[0].backgroundColor = gradient;
+function colorChart() {
+    const ds = chart.data.datasets[0];
+    ds.pointBackgroundColor = ds.data.map(v => scoreToColor(v));
+    ds.pointBorderColor = ds.data.map(v => scoreToColor(v));
 }
 
 function updateBadge(status) {
@@ -241,8 +278,19 @@ function updateSummary(info) {
         return;
     }
 
-    const incidentNames = incidents.slice(0, 5).map(i => i.name).join('; ');
-    el.textContent = `${name} is currently experiencing issues. Active incidents: ${incidentNames}. Monitor this page for updates.`;
+    const lines = incidents.slice(0, 5).map(i => {
+        let desc = i.name || 'Unknown Issue';
+        if (i.awsLocation) desc += ` — Region: ${i.awsLocation}`;
+        return desc;
+    });
+
+    const regionImpact = info.regionImpact || {};
+    const affectedRegions = Object.keys(regionImpact);
+    const regionNote = affectedRegions.length > 0
+        ? ` Affected regions: ${affectedRegions.join(', ')}.`
+        : '';
+
+    el.textContent = `${name} is currently experiencing issues.${regionNote} Active incidents: ${lines.join('; ')}. Monitor this page for updates.`;
 }
 
 async function fetchNews() {

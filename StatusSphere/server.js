@@ -258,8 +258,13 @@ function buildStatusContext() {
     for (const [slug, info] of Object.entries(data)) {
         const name = ENTITY_CONFIG[slug]?.name || slug;
         const incidentCount = info.incidents?.length || 0;
-        const incidentNames = (info.incidents || []).slice(0, 3).map(i => i.name).join('; ');
-        lines.push(`${name}: status=${info.status}, healthScore=${info.healthScore}, incidents=${incidentCount}${incidentNames ? ' (' + incidentNames + ')' : ''}`);
+        const incidentSummaries = (info.incidents || []).slice(0, 5).map(i => {
+            let desc = stripMarkers(i.name);
+            if (i.awsLocation) desc += ` [Location: ${i.awsLocation}]`;
+            return desc;
+        });
+        const incidentText = incidentSummaries.join('; ');
+        lines.push(`${name}: status=${info.status}, healthScore=${info.healthScore}, incidents=${incidentCount}${incidentText ? ' (' + incidentText + ')' : ''}`);
     }
     return lines.join('\n');
 }
@@ -302,6 +307,18 @@ You have access to real-time data about these monitored services:
 - Cloud Providers: AWS, Azure, Google Cloud (GCP)
 - CDN/Edge: Cloudflare, Akamai
 
+AWS REGION MAPPING (always use these when describing AWS incidents):
+us-east-1 = N. Virginia, USA | us-east-2 = Ohio, USA | us-west-1 = N. California, USA | us-west-2 = Oregon, USA
+ca-central-1 = Montreal, Canada | ca-west-1 = Calgary, Canada | sa-east-1 = São Paulo, Brazil
+eu-west-1 = Ireland | eu-west-2 = London, UK | eu-west-3 = Paris, France | eu-central-1 = Frankfurt, Germany
+eu-central-2 = Zurich, Switzerland | eu-north-1 = Stockholm, Sweden | eu-south-1 = Milan, Italy | eu-south-2 = Spain
+ap-southeast-1 = Singapore | ap-southeast-2 = Sydney, Australia | ap-southeast-3 = Jakarta, Indonesia
+ap-southeast-4 = Melbourne, Australia | ap-northeast-1 = Tokyo, Japan | ap-northeast-2 = Seoul, South Korea
+ap-northeast-3 = Osaka, Japan | ap-south-1 = Mumbai, India | ap-south-2 = Hyderabad, India | ap-east-1 = Hong Kong
+me-south-1 = Bahrain | me-central-1 = UAE | af-south-1 = Cape Town, South Africa | il-central-1 = Tel Aviv, Israel
+
+When reporting AWS incidents, ALWAYS translate region/AZ codes to their geographic locations. Example: "me-south-1" → "Bahrain". Include both the code and the location name.
+
 STRICT RULES (Guardrails):
 1. ONLY answer questions related to service status, outages, uptime, downtime, incidents, and infrastructure monitoring.
 2. NEVER discuss politics, personal advice, coding help, or any topic outside of infrastructure monitoring.
@@ -313,6 +330,51 @@ STRICT RULES (Guardrails):
 const TOTAL_SERVICES_AWS = 200;
 const TOTAL_SERVICES_GCP = 180;
 const TOTAL_SERVICES_AZURE = 200;
+
+const AWS_REGION_MAP = {
+    'us-east-1': { location: 'N. Virginia, USA', region: 'NA' },
+    'us-east-2': { location: 'Ohio, USA', region: 'NA' },
+    'us-west-1': { location: 'N. California, USA', region: 'NA' },
+    'us-west-2': { location: 'Oregon, USA', region: 'NA' },
+    'ca-central-1': { location: 'Montreal, Canada', region: 'NA' },
+    'ca-west-1': { location: 'Calgary, Canada', region: 'NA' },
+    'sa-east-1': { location: 'São Paulo, Brazil', region: 'SA' },
+    'eu-west-1': { location: 'Ireland', region: 'EU' },
+    'eu-west-2': { location: 'London, UK', region: 'EU' },
+    'eu-west-3': { location: 'Paris, France', region: 'EU' },
+    'eu-central-1': { location: 'Frankfurt, Germany', region: 'EU' },
+    'eu-central-2': { location: 'Zurich, Switzerland', region: 'EU' },
+    'eu-north-1': { location: 'Stockholm, Sweden', region: 'EU' },
+    'eu-south-1': { location: 'Milan, Italy', region: 'EU' },
+    'eu-south-2': { location: 'Spain', region: 'EU' },
+    'ap-southeast-1': { location: 'Singapore', region: 'AS' },
+    'ap-southeast-2': { location: 'Sydney, Australia', region: 'OC' },
+    'ap-southeast-3': { location: 'Jakarta, Indonesia', region: 'AS' },
+    'ap-southeast-4': { location: 'Melbourne, Australia', region: 'OC' },
+    'ap-southeast-5': { location: 'Malaysia', region: 'AS' },
+    'ap-northeast-1': { location: 'Tokyo, Japan', region: 'AS' },
+    'ap-northeast-2': { location: 'Seoul, South Korea', region: 'AS' },
+    'ap-northeast-3': { location: 'Osaka, Japan', region: 'AS' },
+    'ap-south-1': { location: 'Mumbai, India', region: 'AS' },
+    'ap-south-2': { location: 'Hyderabad, India', region: 'AS' },
+    'ap-east-1': { location: 'Hong Kong', region: 'AS' },
+    'me-south-1': { location: 'Bahrain', region: 'AS' },
+    'me-central-1': { location: 'UAE', region: 'AS' },
+    'af-south-1': { location: 'Cape Town, South Africa', region: 'AF' },
+    'il-central-1': { location: 'Tel Aviv, Israel', region: 'AS' },
+    'mx-central-1': { location: 'Mexico', region: 'NA' },
+};
+
+function resolveAwsRegion(text) {
+    if (!text) return { location: null, regionCode: null };
+    const lower = text.toLowerCase();
+    for (const [azPrefix, info] of Object.entries(AWS_REGION_MAP)) {
+        if (lower.includes(azPrefix)) {
+            return { location: info.location, regionCode: info.region };
+        }
+    }
+    return { location: null, regionCode: getRegion(text) };
+}
 
 const REGION_KEYWORDS = {
     'NA': ['us-', 'north america', 'canada', 'mexico', 'united states', 'usa', 'ashburn', 'chicago', 'dallas', 'denver', 'los angeles', 'miami', 'new york', 'seattle', 'san jose', 'toronto', 'atlanta'],
@@ -528,6 +590,11 @@ const DISRUPTION_PHRASES = [
     'banking.*unavailable',
 ];
 
+function stripMarkers(text) {
+    if (!text) return text;
+    return text.replace(/\[(TITLE|HEADING|BANNER|BODY)\]\s*/gi, '').trim();
+}
+
 function extractBankIssueByKeywords(rawText) {
     if (!rawText) return null;
 
@@ -574,15 +641,16 @@ async function detectBankIssueWithLLM(bankName, signalText) {
 
     const keywordHit = extractBankIssueByKeywords(signalText);
     if (keywordHit) {
-        console.log(`[BankStatus] ${bankName}: keyword match detected — "${keywordHit}"`);
-        return { hasIssue: true, summary: keywordHit, severity: 0.5 };
+        const cleanSummary = stripMarkers(keywordHit);
+        console.log(`[BankStatus] ${bankName}: keyword match detected — "${cleanSummary}"`);
+        return { hasIssue: true, summary: cleanSummary, severity: 0.5 };
     }
 
     if (!LLM_API_KEY) {
         return { hasIssue: false, summary: '', severity: 0 };
     }
 
-    const truncated = signalText.slice(0, 6000);
+    const truncated = stripMarkers(signalText).slice(0, 6000);
     let verdict = null;
     try {
         verdict = await callLLM([
@@ -611,9 +679,13 @@ async function detectBankIssueWithLLM(bankName, signalText) {
         ? Math.max(0, Math.min(1, severityNum))
         : (parsed.hasIssue ? 0.45 : 0);
 
+    const cleanedSummary = typeof parsed.summary === 'string'
+        ? stripMarkers(parsed.summary).slice(0, 220)
+        : '';
+
     return {
         hasIssue: parsed.hasIssue,
-        summary: typeof parsed.summary === 'string' ? parsed.summary.slice(0, 220) : '',
+        summary: cleanedSummary,
         severity: parsed.hasIssue ? Math.max(0.2, severity) : 0
     };
 }
@@ -690,11 +762,18 @@ async function fetchAWS() {
         const jsonString = decoder.decode(statusResponse.data);
         const incidentsData = JSON.parse(jsonString);
 
-        const incidents = incidentsData.map(i => ({
-            name: i.service || i.eventTypeCode || 'Unknown Issue',
-            link: 'https://health.aws.amazon.com/health/status',
-            region: getRegion(i.service ? i.service : '')
-        }));
+        const incidents = incidentsData.map(i => {
+            const rawName = i.service || i.eventTypeCode || 'Unknown Issue';
+            const rawText = [i.service, i.eventTypeCode, i.eventTypeCategory, i.region, i.availabilityZone, i.description].filter(Boolean).join(' ');
+            const resolved = resolveAwsRegion(rawText);
+            const locationTag = resolved.location ? ` (${resolved.location})` : '';
+            return {
+                name: rawName + locationTag,
+                link: 'https://health.aws.amazon.com/health/status',
+                region: resolved.regionCode || resolved.location ? resolved.regionCode : getRegion(rawText),
+                awsLocation: resolved.location
+            };
+        });
 
         const regionImpact = {};
         incidents.forEach(inc => {
@@ -1123,9 +1202,9 @@ app.get('/api/headline', async (req, res) => {
         headline = await callLLM([
             {
                 role: 'system',
-                content: `You write short breaking-news style headlines for an infrastructure monitoring dashboard. Write a SINGLE line (max 200 chars) summarizing the current state of all services. Use a news-ticker tone: urgent if there are issues, reassuring if all is well. No markdown, no line breaks. Examples:
+                content: `You write short breaking-news style headlines for an infrastructure monitoring dashboard. Write a SINGLE line (max 200 chars) summarizing the current state of all services. Use a news-ticker tone: urgent if there are issues, reassuring if all is well. No markdown, no line breaks. For AWS incidents, always mention the geographic location (e.g. "Bahrain" for me-south-1, "Singapore" for ap-southeast-1). Examples:
 "ALL CLEAR: All 12 monitored services operational — banks, cloud, and CDN running smoothly"
-"ALERT: AWS reporting 3 active incidents in NA region — all banks and CDN services remain operational"`
+"ALERT: AWS reporting 3 active incidents in Bahrain (me-south-1) — all banks and CDN services remain operational"`
             },
             {
                 role: 'user',
