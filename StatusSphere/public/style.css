@@ -475,8 +475,33 @@ button:disabled {
     position: relative;
 }
 
+.entity-links {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.entity-links a {
+    color: var(--accent-color);
+    word-break: break-all;
+}
+
+.entity-links a:hover {
+    text-decoration: underline;
+}
+
 .screenshot-area {
     text-align: center;
+}
+
+#status-preview-frame {
+    width: 100%;
+    min-height: 420px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    background: #0b1220;
 }
 
 .screenshot-area img {

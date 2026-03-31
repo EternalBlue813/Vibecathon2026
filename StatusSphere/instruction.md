@@ -55,9 +55,9 @@ StatusSphere is a real-time infrastructure status monitoring dashboard that trac
 | `server.js` | Express server, fetches data, handles API routes, entity config |
 | `supabase.js` | Supabase client, database operations |
 | `public/index.html` | Dashboard HTML (tile grid) |
-| `public/app.js` | Dashboard JS: polls `/status`, updates tile colors |
+| `public/app.js` | Dashboard JS: reloads entities on load, polls `/api/config` + `/status`, updates tiles |
 | `public/detail.html` | Detail page HTML |
-| `public/detail.js` | Detail page JS: Chart.js history, news, summary |
+| `public/detail.js` | Detail page JS: loads entity URLs from DB (`entities`), last fetch from `snapshots`, and renders live status-page preview |
 | `public/style.css` | Shared stylesheet (dashboard + detail) |
 | `database/001-initial.sql` | Initial schema |
 | `database/002-add-banks.sql` | Migration to allow bank slugs |
@@ -83,7 +83,7 @@ StatusSphere is a real-time infrastructure status monitoring dashboard that trac
 | `fetchAzure()` | Azure RSS Feed | XML format |
 | `fetchGCP()` | GCP Status JSON | Open incidents only |
 | `fetchStatusPage()` | Atlassian Statuspage API | Generic CDN/Cloud status pages + 403 fallback |
-| `fetchBankStatus(entity)` | Bank website/status URLs | Extracts alerts/incidents from live page content |
+| `fetchBankStatus(entity)` | Bank website/status URLs | Uses LLM classification to determine issue + health score from scraped page content |
 
 ### News Source
 
@@ -150,6 +150,8 @@ This endpoint reloads entities from Supabase before returning data.
 
 Returns current status for all entities from live scraping.
 
+Includes `fetchedAt` timestamp for each entity.
+
 **Response:**
 ```json
 {
@@ -184,24 +186,33 @@ Forces server-side entity reload from Supabase without restarting the server.
 
 **Response:** `{ "success": true, "entities": <count>, "slugs": [...] }`
 
+### GET `/api/entity/:entity`
+
+Returns DB-backed metadata for one entity.
+
+- URLs from `entities` table (`url`, `status_page_url`)
+- Last fetch timestamp from latest row in `snapshots` table (`polled_at`)
+
 ---
 
 ## Data Flow
 
 ```
 Page Load (Dashboard):
+  Browser → POST /api/entities/reload → refresh DB entities immediately
   Browser → GET /api/config → Build tiles
   Browser → GET /status → Color tiles green/red
 
 Page Load (Detail):
-  Browser → GET /api/config → Set entity name
+  Browser → POST /api/entities/reload → refresh DB entities immediately
+  Browser → GET /api/config → Set entity name + URLs + preview source
   Browser → GET /history → Populate chart
-  Browser → GET /status → Update badge + chart
+  Browser → GET /status → Update badge + chart + last fetch time
   Browser → GET /news/:entity → Populate news list
 
 Live Polling (every 2 min):
   Dashboard: GET /api/config + GET /status → Reload latest entities + update tile states
-  Detail: GET /api/config + GET /status → Reload entity metadata + update badge/chart
+  Detail: GET /api/config + GET /status → Reload entity metadata, URLs, preview target, and fetch timestamp
 ```
 
 ---
@@ -237,20 +248,32 @@ Live Polling (every 2 min):
 
 ### Modifying Fetch Intervals
 
-- Status: Change `CACHE_DURATION` in `.env` or `server.js`
-- News: Change `NEWS_FETCH_INTERVAL` in `server.js`
+- Status: Set `CACHE_DURATION` in `.env` (default 120s)
+- News: Set `NEWS_FETCH_INTERVAL` in `.env` (default 30min)
+- Headline: Set `HEADLINE_CACHE_DURATION` in `.env` (default 120s)
+
+### Bank Status Detection
+
+Bank status detection works by:
+1. Scraping the bank's website (URL from `status_page_url` or `url` in `entities` table)
+2. Extracting text from title, headings, alerts, banners
+3. Sending to LLM to classify if there's an active issue
+
+**Important**: Most banks don't have dedicated status pages like cloud providers. The scraper pulls from their main website which may not show alerts prominently. For best results, ensure `status_page_url` points to a page with alerts/banners.
 
 ---
 
 ## Last Updated
 
-Document version: 3.2
+Document version: 3.4
 Last updated: 2026-03-31
 
 ## Changelog
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 3.4 | 2026-03-31 | Bank `health_score` now LLM-driven from scraped status-page content, added `GET /api/entity/:entity` (URLs from `entities`, last fetch from `snapshots`), detail preview now uses `entities.status_page_url` |
+| 3.3 | 2026-03-31 | Dashboard/detail now force DB entity reload on page load, detail page shows main/status URLs + live website preview + last fetch timestamp, AI summary moved above chart |
 | 3.2 | 2026-03-31 | Removed all simulation flows, added live bank scraping from Supabase URLs, added `POST /api/entities/reload`, frontend now refreshes entity config on each fetch, documented SQL migration policy |
 | 3.1 | 2026-03-31 | Fixed dynamic scraping: removed duplicate hardcoded status fetcher, improved bank incident extraction, added Fastly 403 fallback, added provider constraint fix migration |
 | 3.0 | 2026-03-31 | Entities now database-driven: added `entities` table, dynamic scraping from DB, removed hardcoded config |

@@ -28,7 +28,12 @@ function setEntities(entities) {
     const cdn = [];
 
     for (const e of orderedEntities) {
-        config[e.slug] = { name: e.name, category: e.type };
+        config[e.slug] = {
+            name: e.name,
+            category: e.type,
+            url: e.url || null,
+            statusUrl: e.status_page_url || null
+        };
         if (e.type === 'bank') bank.push(e.slug);
         if (e.type === 'cloud') cloud.push(e.slug);
         if (e.type === 'cdn') cdn.push(e.slug);
@@ -55,9 +60,9 @@ async function loadEntitiesFromDb() {
             .from('entities')
             .select('slug, name, type, url, status_page_url, is_active')
             .eq('is_active', true);
-        
+
         if (error) throw error;
-        
+
         setEntities(data || []);
         if (ALL_SLUGS.length > 0) {
             console.log('[Entities] Loaded from DB:', ALL_SLUGS.join(', '));
@@ -103,7 +108,7 @@ async function scrapeEntityStatus(entity) {
 
 async function fetchAllStatus() {
     const entities = await loadEntitiesFromDb();
-    
+
     if (!entities || entities.length === 0) {
         return {};
     }
@@ -118,7 +123,7 @@ async function fetchAllStatus() {
 }
 
 function defaultEntry() {
-    return { status: 'Unknown', healthScore: 1, incidents: [], news: [], regionImpact: {} };
+    return { status: 'Unknown', healthScore: 1, incidents: [], news: [], regionImpact: {}, fetchedAt: null };
 }
 
 let cache = {
@@ -153,37 +158,37 @@ async function reloadEntities() {
 }
 
 const CACHE_DURATION = parseInt(process.env.CACHE_DURATION) || 120 * 1000;
-const NEWS_FETCH_INTERVAL = 30 * 60 * 1000;
-let lastNewsFetch = 0;
-
-// --- OpenRouter LLM ---
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'google/gemini-2.0-flash-001';
-const HEADLINE_CACHE_DURATION = 120 * 1000;
+const NEWS_FETCH_INTERVAL = parseInt(process.env.NEWS_FETCH_INTERVAL) || 30 * 60 * 1000;
+const HEADLINE_CACHE_DURATION = parseInt(process.env.HEADLINE_CACHE_DURATION) || 120 * 1000;
 let headlineCache = { text: '', timestamp: 0 };
 
 async function callLLM(messages, maxTokens = 512) {
-    if (!OPENROUTER_API_KEY) {
+    if (!LLM_API_KEY) {
         return null;
     }
     try {
-        const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
-            model: OPENROUTER_MODEL,
-            messages,
+        const isInputArray = Array.isArray(messages) && messages[0]?.role;
+        const res = await axios.post(`${LLM_BASE_URL}/chat/completions`, {
+            model: LLM_MODEL,
+            messages: isInputArray ? messages : undefined,
+            input: isInputArray ? undefined : messages,
             max_tokens: maxTokens,
             temperature: 0.4,
         }, {
             headers: {
-                'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                'Authorization': `Bearer ${LLM_API_KEY}`,
                 'Content-Type': 'application/json',
-                'HTTP-Referer': 'https://statussphere.app',
                 'X-Title': 'StatusSphere',
             },
             timeout: 30000,
         });
-        return res.data.choices?.[0]?.message?.content?.trim() || null;
+        const output = res.data.choices?.[0]?.message?.content?.trim()
+            || res.data.output?.[0]?.content?.trim()
+            || res.data.output_text?.trim()
+            || null;
+        return output;
     } catch (err) {
-        console.error('[LLM] OpenRouter error:', err.response?.data || err.message);
+        console.error('[LLM] Error:', err.response?.data || err.message);
         return null;
     }
 }
@@ -213,14 +218,20 @@ async function inputGuardrail(userMessage) {
         return { allowed: true };
     }
 
-    const verdict = await callLLM([
-        {
-            role: 'system',
-            content: `You are a topic classifier. Determine if the user message is related to ANY of these topics: infrastructure status monitoring, service outages, uptime/downtime, banks (DBS, OCBC, UOB, Citi, SCB, HSBC, Maybank), cloud providers (AWS, Azure, GCP), CDN providers (Cloudflare, Akamai), or general greetings.
+    let verdict = null;
+    try {
+        verdict = await callLLM([
+            {
+                role: 'system',
+                content: `You are a topic classifier. Determine if the user message is related to ANY of these topics: infrastructure status monitoring, service outages, uptime/downtime, banks (DBS, OCBC, UOB, Citi, SCB, HSBC, Maybank), cloud providers (AWS, Azure, GCP), CDN providers (Cloudflare, Akamai), or general greetings.
 Reply with ONLY "yes" or "no".`
-        },
-        { role: 'user', content: userMessage }
-    ], 4);
+            },
+            { role: 'user', content: userMessage }
+        ], 4);
+    } catch (e) {
+        console.warn('[LLM] Guardrail check failed, allowing request:', e.message);
+        return { allowed: true };
+    }
 
     if (verdict && verdict.toLowerCase().startsWith('yes')) {
         return { allowed: true };
@@ -505,35 +516,46 @@ function parseJsonObject(text) {
 
 async function detectBankIssueWithLLM(bankName, signalText) {
     if (!signalText || !signalText.trim()) {
-        return { hasIssue: false, summary: '' };
+        return { hasIssue: false, summary: '', severity: 0 };
     }
 
-    if (!OPENROUTER_API_KEY) {
+    if (!LLM_API_KEY) {
         const fallback = extractBankIssueByKeywords(signalText);
-        return { hasIssue: Boolean(fallback), summary: fallback || '' };
+        return { hasIssue: Boolean(fallback), summary: fallback || '', severity: fallback ? 0.45 : 0 };
     }
 
     const truncated = signalText.slice(0, 6000);
-    const verdict = await callLLM([
-        {
-            role: 'system',
-            content: 'You classify bank status-page content. Decide if there is an active service problem. Return ONLY JSON with keys: hasIssue (boolean), summary (string <= 180 chars). hasIssue=true only for active incidents, maintenance, outages, disruptions, service degradation, or login/access problems. Do not infer from generic marketing text.'
-        },
-        {
-            role: 'user',
-            content: `Bank: ${bankName}\nStatus page content:\n${truncated}`
-        }
-    ], 120);
+    let verdict = null;
+    try {
+        verdict = await callLLM([
+            {
+                role: 'system',
+                content: 'You classify bank status-page content. Decide if there is an active service problem. Return ONLY JSON with keys: hasIssue (boolean), summary (string <= 180 chars), severity (number 0..1). hasIssue=true only for active incidents, maintenance, outages, disruptions, service degradation, or login/access problems. severity must be 0 when hasIssue=false. Do not infer from generic marketing text.'
+            },
+            {
+                role: 'user',
+                content: `Bank: ${bankName}\nStatus page content:\n${truncated}`
+            }
+        ], 120);
+    } catch (e) {
+        console.warn('[LLM] Bank detection failed, using keyword fallback:', e.message);
+    }
 
     const parsed = parseJsonObject(verdict);
     if (!parsed || typeof parsed.hasIssue !== 'boolean') {
         const fallback = extractBankIssueByKeywords(signalText);
-        return { hasIssue: Boolean(fallback), summary: fallback || '' };
+        return { hasIssue: Boolean(fallback), summary: fallback || '', severity: fallback ? 0.45 : 0 };
     }
+
+    const severityNum = Number(parsed.severity);
+    const severity = Number.isFinite(severityNum)
+        ? Math.max(0, Math.min(1, severityNum))
+        : (parsed.hasIssue ? 0.45 : 0);
 
     return {
         hasIssue: parsed.hasIssue,
-        summary: typeof parsed.summary === 'string' ? parsed.summary.slice(0, 220) : ''
+        summary: typeof parsed.summary === 'string' ? parsed.summary.slice(0, 220) : '',
+        severity: parsed.hasIssue ? Math.max(0.2, severity) : 0
     };
 }
 
@@ -567,9 +589,10 @@ async function fetchBankStatus(entity) {
         }
 
         const issueName = llmResult.summary || 'Possible bank service issue detected from status page';
+        const healthScore = Math.max(0.05, 1 - llmResult.severity);
         return {
             status: 'Warning',
-            healthScore: 0.55,
+            healthScore,
             incidents: [{ name: issueName, link: statusUrl, region: getRegion(signalText) || 'AS' }],
             regionImpact: { AS: 1 }
         };
@@ -792,11 +815,13 @@ async function updateStatus() {
 
     console.log('[StatusSphere] Fetching fresh status data...');
     const statusData = await fetchAllStatus();
+    const fetchedAt = new Date().toISOString();
     for (const provider of Object.keys(statusData)) {
         const existingNews = cache.data[provider]?.news || [];
         cache.data[provider] = {
             ...statusData[provider],
-            news: existingNews
+            news: existingNews,
+            fetchedAt
         };
     }
     cache.timestamp = now;
@@ -855,6 +880,51 @@ app.post('/api/entities/reload', async (req, res) => {
     res.json({ success: true, entities: ALL_SLUGS.length, slugs: ALL_SLUGS });
 });
 
+app.get('/api/entity/:entity', async (req, res) => {
+    const slug = req.params.entity;
+    if (!slug) {
+        return res.status(400).json({ error: 'Entity slug is required' });
+    }
+    if (!supabase) {
+        return res.status(503).json({ error: 'Database not configured' });
+    }
+
+    const { data: entityRow, error: entityError } = await supabase
+        .from('entities')
+        .select('slug, name, type, url, status_page_url')
+        .eq('slug', slug)
+        .eq('is_active', true)
+        .maybeSingle();
+
+    if (entityError) {
+        return res.status(500).json({ error: entityError.message });
+    }
+    if (!entityRow) {
+        return res.status(404).json({ error: 'Unknown entity' });
+    }
+
+    const { data: snapshotRow, error: snapshotError } = await supabase
+        .from('snapshots')
+        .select('polled_at')
+        .eq('provider', slug)
+        .order('polled_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+    if (snapshotError) {
+        return res.status(500).json({ error: snapshotError.message });
+    }
+
+    return res.json({
+        slug: entityRow.slug,
+        name: entityRow.name,
+        category: entityRow.type,
+        url: entityRow.url,
+        statusUrl: entityRow.status_page_url,
+        lastFetch: snapshotRow?.polled_at || null
+    });
+});
+
 app.get('/history', async (req, res) => {
     if (!supabase) {
         return res.status(503).json({ error: 'Database not configured' });
@@ -897,6 +967,39 @@ app.get('/news/:entity', async (req, res) => {
     res.json(articles);
 });
 
+// --- Proxy for iframe (adds User-Agent to bypass bank anti-bot) ---
+app.get('/api/proxy', async (req, res) => {
+    const targetUrl = req.query.url;
+    if (!targetUrl) {
+        return res.status(400).json({ error: 'url parameter required' });
+    }
+    try {
+        const response = await axios.get(targetUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Cache-Control': 'no-cache',
+            },
+            timeout: 15000,
+            responseType: 'text',
+            maxRedirects: 5,
+        });
+        let html = response.data;
+        const csp = res.get('Content-Security-Policy');
+        if (csp) {
+            res.removeHeader('Content-Security-Policy');
+        }
+        res.set('Content-Type', 'text/html; charset=utf-8');
+        res.set('X-Frame-Options', 'ALLOW');
+        res.set('Access-Control-Allow-Origin', '*');
+        res.send(html);
+    } catch (err) {
+        console.error('[Proxy] Error:', err.message);
+        res.status(502).send(`Failed to fetch: ${err.message}`);
+    }
+});
+
 // --- LLM Endpoints ---
 
 app.get('/api/headline', async (req, res) => {
@@ -905,24 +1008,29 @@ app.get('/api/headline', async (req, res) => {
         return res.json({ headline: headlineCache.text });
     }
 
-    if (!OPENROUTER_API_KEY) {
+    if (!LLM_API_KEY) {
         const fallback = buildFallbackHeadline();
         return res.json({ headline: fallback });
     }
 
     const statusCtx = buildStatusContext();
-    const headline = await callLLM([
-        {
-            role: 'system',
-            content: `You write short breaking-news style headlines for an infrastructure monitoring dashboard. Write a SINGLE line (max 200 chars) summarizing the current state of all services. Use a news-ticker tone: urgent if there are issues, reassuring if all is well. No markdown, no line breaks. Examples:
+    let headline = null;
+    try {
+        headline = await callLLM([
+            {
+                role: 'system',
+                content: `You write short breaking-news style headlines for an infrastructure monitoring dashboard. Write a SINGLE line (max 200 chars) summarizing the current state of all services. Use a news-ticker tone: urgent if there are issues, reassuring if all is well. No markdown, no line breaks. Examples:
 "ALL CLEAR: All 12 monitored services operational — banks, cloud, and CDN running smoothly"
 "ALERT: AWS reporting 3 active incidents in NA region — all banks and CDN services remain operational"`
-        },
-        {
-            role: 'user',
-            content: `Current service statuses:\n${statusCtx}\n\nWrite the headline now.`
-        }
-    ], 100);
+            },
+            {
+                role: 'user',
+                content: `Current service statuses:\n${statusCtx}\n\nWrite the headline now.`
+            }
+        ], 100);
+    } catch (e) {
+        console.warn('[LLM] Headline generation failed, using fallback:', e.message);
+    }
 
     const result = headline || buildFallbackHeadline();
     headlineCache = { text: result, timestamp: now };
@@ -954,9 +1062,9 @@ app.post('/api/chat', async (req, res) => {
         return res.status(400).json({ error: 'messages array required' });
     }
 
-    if (!OPENROUTER_API_KEY) {
+    if (!LLM_API_KEY) {
         return res.json({
-            reply: 'AI chat is not configured. Please set OPENROUTER_API_KEY in your .env file.',
+            reply: 'AI chat is not configured. Please set LLM_API_KEY in your .env file.',
             guardrail: null
         });
     }
@@ -977,11 +1085,16 @@ app.post('/api/chat', async (req, res) => {
         ...messages.slice(-10),
     ];
 
-    const reply = await callLLM(llmMessages, 600);
+    let reply = null;
+    try {
+        reply = await callLLM(llmMessages, 600);
+    } catch (e) {
+        console.warn('[LLM] Chat response failed, using fallback:', e.message);
+    }
 
     if (!reply) {
         return res.json({
-            reply: 'Sorry, I was unable to generate a response. Please try again.',
+            reply: 'StatusSphere is temporarily unable to generate a response. Please try again later.',
             guardrail: null
         });
     }
@@ -994,10 +1107,10 @@ app.listen(PORT, async () => {
     initializeCache();
 
     await reloadEntities();
-    
+
     console.log(`[StatusSphere] Server running at http://localhost:${PORT}`);
     console.log(`[StatusSphere] Monitoring: ${ALL_SLUGS.join(', ')}`);
-    console.log(`[StatusSphere] LLM: ${OPENROUTER_API_KEY ? OPENROUTER_MODEL : 'not configured (set OPENROUTER_API_KEY)'}`);
+    console.log(`[StatusSphere] LLM: ${LLM_API_KEY ? LLM_MODEL : 'not configured (set LLM_API_KEY, OPENROUTER_API_KEY, or GROQ_API_KEY)'}`);
     if (supabase) {
         const dbStatus = await verifySupabaseConnection();
         if (dbStatus.ok) {

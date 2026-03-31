@@ -1,4 +1,6 @@
 const CONFIG_URL = '/api/config';
+const RELOAD_ENTITIES_URL = '/api/entities/reload';
+const ENTITY_META_URL = '/api/entity/';
 const STATUS_URL = '/status';
 const HISTORY_URL = '/history';
 const MAX_HISTORY = 20;
@@ -7,6 +9,64 @@ const POLL_INTERVAL = 120000;
 let chart = null;
 let entitySlug = null;
 let entityMeta = null;
+
+async function reloadEntitiesFromDb() {
+    try {
+        await fetch(RELOAD_ENTITIES_URL, { method: 'POST' });
+    } catch (e) {
+        console.error('Failed to reload entities:', e);
+    }
+}
+
+function applyEntityMetaToPage() {
+    const name = entityMeta?.name || entitySlug;
+    const mainUrl = entityMeta?.url || '#';
+    const statusUrl = entityMeta?.statusUrl || '#';
+
+    document.getElementById('entity-name').textContent = name;
+    document.title = `StatusSphere | ${name}`;
+
+    const mainLink = document.getElementById('entity-main-url');
+    const statusLink = document.getElementById('entity-status-url');
+    if (mainLink) {
+        mainLink.href = mainUrl;
+        mainLink.textContent = mainUrl;
+    }
+    if (statusLink) {
+        statusLink.href = statusUrl;
+        statusLink.textContent = statusUrl;
+    }
+
+    const frame = document.getElementById('status-preview-frame');
+    const previewFallback = document.getElementById('preview-fallback');
+    if (frame) {
+        if (statusUrl && statusUrl !== '#') {
+            const proxyUrl = `/api/proxy?url=${encodeURIComponent(statusUrl)}`;
+            frame.src = proxyUrl;
+            frame.style.display = 'block';
+            if (previewFallback) previewFallback.style.display = 'none';
+        } else {
+            frame.removeAttribute('src');
+            frame.style.display = 'none';
+            if (previewFallback) previewFallback.style.display = 'block';
+        }
+    }
+
+    updateLastFetch(entityMeta?.lastFetch || null);
+}
+
+async function refreshEntityDetailsFromDb() {
+    try {
+        const res = await fetch(`${ENTITY_META_URL}${encodeURIComponent(entitySlug)}`);
+        if (!res.ok) {
+            return;
+        }
+        entityMeta = await res.json();
+        applyEntityMetaToPage();
+    } catch (e) {
+        console.error('Failed to load entity details:', e);
+    }
+}
 
 async function refreshEntityMeta() {
     try {
@@ -17,9 +77,7 @@ async function refreshEntityMeta() {
         console.error('Failed to load config', e);
     }
 
-    const name = entityMeta?.name || entitySlug;
-    document.getElementById('entity-name').textContent = name;
-    document.title = `StatusSphere | ${name}`;
+    applyEntityMetaToPage();
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -31,7 +89,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
+    await reloadEntitiesFromDb();
     await refreshEntityMeta();
+    await refreshEntityDetailsFromDb();
 
     initChart();
     await loadHistory();
@@ -123,8 +183,11 @@ async function fetchStatus() {
         const info = data[entitySlug];
         if (!info) return;
 
+        await refreshEntityDetailsFromDb();
+
         updateBadge(info.status);
         updateSummary(info);
+        updateLastFetch(entityMeta?.lastFetch || null);
 
         const score = info.healthScore !== undefined ? info.healthScore : (info.status === 'Healthy' ? 1 : 0);
         const chartData = chart.data.datasets[0].data;
@@ -135,6 +198,18 @@ async function fetchStatus() {
     } catch (e) {
         console.error('Failed to fetch status:', e);
     }
+}
+
+function updateLastFetch(fetchedAt) {
+    const el = document.getElementById('entity-last-fetch');
+    if (!el) return;
+    if (!fetchedAt) {
+        el.textContent = '-';
+        return;
+    }
+
+    const dt = new Date(fetchedAt);
+    el.textContent = Number.isNaN(dt.getTime()) ? fetchedAt : dt.toLocaleString();
 }
 
 function colorChart(latestScore) {

@@ -1,5 +1,6 @@
 const API_URL = '/status';
 const CONFIG_URL = '/api/config';
+const RELOAD_ENTITIES_URL = '/api/entities/reload';
 const HEADLINE_URL = '/api/headline';
 const CHAT_URL = '/api/chat';
 const POLL_INTERVAL = 120000;
@@ -17,6 +18,7 @@ const GRID_MAP = {
 
 // --- Init ---
 document.addEventListener('DOMContentLoaded', async () => {
+    await reloadEntitiesFromDb();
     await refreshConfigIfChanged();
     await fetchData();
     setInterval(fetchData, POLL_INTERVAL);
@@ -36,6 +38,14 @@ async function loadConfig() {
     } catch (e) {
         console.error('Failed to load entity config:', e);
         entityConfig = {};
+    }
+}
+
+async function reloadEntitiesFromDb() {
+    try {
+        await fetch(RELOAD_ENTITIES_URL, { method: 'POST' });
+    } catch (e) {
+        console.error('Failed to reload entities:', e);
     }
 }
 
