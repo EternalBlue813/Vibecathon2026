@@ -1,7 +1,7 @@
 const { createClient } = require('@supabase/supabase-js');
 
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SECRET_KEY;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
     console.warn('Supabase credentials not found. Data will not be persisted.');
@@ -54,6 +54,26 @@ async function storeIncident(snapshotId, provider, name, link, region) {
 async function storeNews(snapshotId, provider, title, link, source, publishedAt) {
     if (!supabase || !snapshotId) return;
 
+    const duplicateWindowStart = new Date(Date.now() - (24 * 60 * 60 * 1000)).toISOString();
+    const existingQuery = supabase
+        .from('news_articles')
+        .select('id')
+        .eq('provider', provider)
+        .eq('title', title)
+        .gte('fetched_at', duplicateWindowStart)
+        .limit(1);
+
+    if (link) {
+        existingQuery.eq('link', link);
+    } else {
+        existingQuery.is('link', null);
+    }
+
+    const { data: existingRows, error: lookupError } = await existingQuery;
+    if (!lookupError && Array.isArray(existingRows) && existingRows.length > 0) {
+        return;
+    }
+
     const { error } = await supabase
         .from('news_articles')
         .insert({
@@ -71,9 +91,27 @@ async function storeNews(snapshotId, provider, title, link, source, publishedAt)
     }
 }
 
+async function verifySupabaseConnection() {
+    if (!supabase) {
+        return { ok: false, reason: 'missing_credentials' };
+    }
+
+    const { error } = await supabase
+        .from('snapshots')
+        .select('id')
+        .limit(1);
+
+    if (error) {
+        return { ok: false, reason: error.message };
+    }
+
+    return { ok: true };
+}
+
 module.exports = {
     supabase,
     storeSnapshot,
     storeIncident,
-    storeNews
+    storeNews,
+    verifySupabaseConnection
 };
