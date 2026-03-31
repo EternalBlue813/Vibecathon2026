@@ -5,6 +5,7 @@ const cheerio = require('cheerio');
 const cors = require('cors');
 const xml2js = require('xml2js');
 const { supabase, storeSnapshot, storeIncident, storeNews, verifySupabaseConnection } = require('./supabase');
+const screenshotter = require('./screenshotter');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -161,6 +162,11 @@ const CACHE_DURATION = parseInt(process.env.CACHE_DURATION) || 120 * 1000;
 const NEWS_FETCH_INTERVAL = parseInt(process.env.NEWS_FETCH_INTERVAL) || 30 * 60 * 1000;
 const HEADLINE_CACHE_DURATION = parseInt(process.env.HEADLINE_CACHE_DURATION) || 120 * 1000;
 let headlineCache = { text: '', timestamp: 0 };
+let lastNewsFetch = 0;
+
+const LLM_API_KEY = process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY || '';
+const LLM_MODEL = process.env.LLM_MODEL || process.env.OPENROUTER_MODEL || 'google/gemini-2.0-flash-001';
+const LLM_BASE_URL = process.env.LLM_BASE_URL || 'https://openrouter.ai/api/v1';
 
 async function callLLM(messages, maxTokens = 512) {
     if (!LLM_API_KEY) {
@@ -479,21 +485,68 @@ async function fetchStatusPage(name, url) {
     }
 }
 
+const DISRUPTION_PHRASES = [
+    'services affected',
+    'service affected',
+    'services disrupted',
+    'service disrupted',
+    'service disruption',
+    'experiencing delays',
+    'experiencing issues',
+    'experiencing difficulties',
+    'currently experiencing',
+    'system unavailable',
+    'system is unavailable',
+    'service unavailable',
+    'service is unavailable',
+    'services unavailable',
+    'temporarily unavailable',
+    'currently unavailable',
+    'unable to access',
+    'system down',
+    'service down',
+    'services down',
+    'is down',
+    'are down',
+    'outage',
+    'major outage',
+    'degraded service',
+    'degraded performance',
+    'maintenance',
+    'disruption',
+    'intermittent',
+    'service interruption',
+    'scheduled downtime',
+    'technical difficulties',
+    'working to resolve',
+    'we apologise',
+    'we apologize',
+    'under maintenance',
+    'fund transfer.*affected',
+    'payment.*affected',
+    'login.*unavailable',
+    'banking.*unavailable',
+];
+
 function extractBankIssueByKeywords(rawText) {
-    const triggerWords = [
-        'maintenance', 'disruption', 'outage', 'unavailable', 'degraded',
-        'intermittent', 'latency', 'service interruption', 'scheduled downtime',
-        'technical difficulties', 'experiencing issues'
-    ];
+    if (!rawText) return null;
+
+    const normalized = rawText.toLowerCase().replace(/\s+/g, ' ');
     const lines = rawText
         .split(/[\n\r\.]+/)
         .map((line) => line.replace(/\s+/g, ' ').trim())
         .filter(Boolean);
 
-    for (const line of lines) {
-        const lower = line.toLowerCase();
-        if (triggerWords.some((kw) => lower.includes(kw))) {
-            return line.slice(0, 220);
+    for (const phrase of DISRUPTION_PHRASES) {
+        if (phrase.includes('.*')) {
+            const regex = new RegExp(phrase, 'i');
+            if (regex.test(normalized)) {
+                const matchLine = lines.find(l => regex.test(l.toLowerCase())) || phrase;
+                return matchLine.slice(0, 220);
+            }
+        } else if (normalized.includes(phrase)) {
+            const matchLine = lines.find(l => l.toLowerCase().includes(phrase));
+            return (matchLine || phrase).slice(0, 220);
         }
     }
     return null;
@@ -519,9 +572,14 @@ async function detectBankIssueWithLLM(bankName, signalText) {
         return { hasIssue: false, summary: '', severity: 0 };
     }
 
+    const keywordHit = extractBankIssueByKeywords(signalText);
+    if (keywordHit) {
+        console.log(`[BankStatus] ${bankName}: keyword match detected — "${keywordHit}"`);
+        return { hasIssue: true, summary: keywordHit, severity: 0.5 };
+    }
+
     if (!LLM_API_KEY) {
-        const fallback = extractBankIssueByKeywords(signalText);
-        return { hasIssue: Boolean(fallback), summary: fallback || '', severity: fallback ? 0.45 : 0 };
+        return { hasIssue: false, summary: '', severity: 0 };
     }
 
     const truncated = signalText.slice(0, 6000);
@@ -538,13 +596,14 @@ async function detectBankIssueWithLLM(bankName, signalText) {
             }
         ], 120);
     } catch (e) {
-        console.warn('[LLM] Bank detection failed, using keyword fallback:', e.message);
+        console.warn('[LLM] Bank detection failed:', e.message);
     }
+
+    console.log(`[BankStatus] ${bankName}: LLM verdict raw — ${verdict}`);
 
     const parsed = parseJsonObject(verdict);
     if (!parsed || typeof parsed.hasIssue !== 'boolean') {
-        const fallback = extractBankIssueByKeywords(signalText);
-        return { hasIssue: Boolean(fallback), summary: fallback || '', severity: fallback ? 0.45 : 0 };
+        return { hasIssue: false, summary: '', severity: 0 };
     }
 
     const severityNum = Number(parsed.severity);
@@ -560,52 +619,63 @@ async function detectBankIssueWithLLM(bankName, signalText) {
 }
 
 async function fetchBankStatus(entity) {
-    const { name, url, status_page_url } = entity;
+    const { slug, name, url, status_page_url } = entity;
     const statusUrl = status_page_url || url;
     if (!statusUrl) {
         return { status: 'Warning', healthScore: 0.2, incidents: [{ name: 'Status page URL is missing', link: '#', region: 'AS' }], regionImpact: { AS: 1 } };
     }
 
-    try {
-        const response = await axios.get(statusUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            },
-            timeout: 12000
-        });
+    let signalText = '';
 
-        const $ = cheerio.load(response.data);
-        const signalText = [
-            $('title').text(),
-            $('h1, h2, h3, h4').text(),
-            $('.alert, .notice, .message, .banner, .warning, [role="alert"]').text(),
-            $('body').text()
-        ].join('\n');
-
-        const llmResult = await detectBankIssueWithLLM(name, signalText);
-        if (!llmResult.hasIssue) {
-            return { status: 'Healthy', healthScore: 1, incidents: [], regionImpact: {} };
-        }
-
-        const issueName = llmResult.summary || 'Possible bank service issue detected from status page';
-        const healthScore = Math.max(0.05, 1 - llmResult.severity);
-        return {
-            status: 'Warning',
-            healthScore,
-            incidents: [{ name: issueName, link: statusUrl, region: getRegion(signalText) || 'AS' }],
-            regionImpact: { AS: 1 }
-        };
-    } catch (error) {
-        const code = error.response?.status;
-        const details = code ? `HTTP ${code}` : error.message;
-        return {
-            status: 'Warning',
-            healthScore: 0.15,
-            incidents: [{ name: `Status page unreachable (${details})`, link: statusUrl, region: 'AS' }],
-            regionImpact: { AS: 1 }
-        };
+    const rendered = screenshotter.getRenderedText(slug);
+    if (rendered && rendered.text) {
+        signalText = rendered.text;
+        console.log(`[BankStatus] ${name}: using Puppeteer-rendered text (${signalText.length} chars, from ${rendered.extractedAt})`);
     }
+
+    if (!signalText) {
+        try {
+            const response = await axios.get(statusUrl, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                },
+                timeout: 12000
+            });
+
+            const $ = cheerio.load(response.data);
+            signalText = [
+                $('title').text(),
+                $('h1, h2, h3, h4').text(),
+                $('.alert, .notice, .message, .banner, .warning, [role="alert"]').text(),
+                $('body').text()
+            ].join('\n');
+            console.log(`[BankStatus] ${name}: using raw HTML scrape fallback (${signalText.length} chars)`);
+        } catch (error) {
+            const code = error.response?.status;
+            const details = code ? `HTTP ${code}` : error.message;
+            return {
+                status: 'Warning',
+                healthScore: 0.15,
+                incidents: [{ name: `Status page unreachable (${details})`, link: statusUrl, region: 'AS' }],
+                regionImpact: { AS: 1 }
+            };
+        }
+    }
+
+    const llmResult = await detectBankIssueWithLLM(name, signalText);
+    if (!llmResult.hasIssue) {
+        return { status: 'Healthy', healthScore: 1, incidents: [], regionImpact: {} };
+    }
+
+    const issueName = llmResult.summary || 'Possible bank service issue detected from status page';
+    const healthScore = Math.max(0.05, 1 - llmResult.severity);
+    return {
+        status: 'Warning',
+        healthScore,
+        incidents: [{ name: issueName, link: statusUrl, region: getRegion(signalText) || 'AS' }],
+        regionImpact: { AS: 1 }
+    };
 }
 
 async function fetchAWS() {
@@ -1000,6 +1070,40 @@ app.get('/api/proxy', async (req, res) => {
     }
 });
 
+// --- Screenshot Endpoints ---
+
+app.get('/api/screenshot/:entity', (req, res) => {
+    const slug = req.params.entity;
+    const meta = screenshotter.getMeta(slug);
+    if (!meta) {
+        return res.json({ available: false, capturedAt: null, url: null });
+    }
+    res.json({
+        available: true,
+        capturedAt: meta.capturedAt,
+        url: meta.url,
+    });
+});
+
+app.get('/api/screenshots', (req, res) => {
+    res.json(screenshotter.getAllMeta());
+});
+
+app.get('/api/screenshot/:entity/rendered-text', (req, res) => {
+    const slug = req.params.entity;
+    const rendered = screenshotter.getRenderedText(slug);
+    if (!rendered) {
+        return res.json({ available: false, text: null });
+    }
+    res.json({ available: true, ...rendered });
+});
+
+app.get('/api/screenshot/:entity/history', (req, res) => {
+    const slug = req.params.entity;
+    const history = screenshotter.getHistory(slug);
+    res.json({ snapshots: history });
+});
+
 // --- LLM Endpoints ---
 
 app.get('/api/headline', async (req, res) => {
@@ -1123,4 +1227,6 @@ app.listen(PORT, async () => {
     }
     console.log(`[StatusSphere] Status polling: every ${CACHE_DURATION / 1000} seconds`);
     console.log(`[StatusSphere] News polling: every ${NEWS_FETCH_INTERVAL / 60000} minutes`);
+
+    screenshotter.startScheduler(() => ENTITY_CONFIG);
 });

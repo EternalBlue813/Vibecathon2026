@@ -47,8 +47,17 @@
         <section class="detail-section" id="screenshot-section" aria-label="Live Preview of Website">
             <h2>Live Preview of Website</h2>
             <div class="screenshot-area" id="screenshot-area">
-                <iframe id="status-preview-frame" title="Status website preview" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
-                <p class="screenshot-placeholder" id="preview-fallback">Live preview unavailable. Open the status page directly above.</p>
+                <p class="screenshot-timestamp" id="screenshot-timestamp">Last capture: waiting...</p>
+                <div class="screenshot-carousel">
+                    <button class="carousel-arrow carousel-prev" id="carousel-prev" aria-label="Previous capture" disabled>&lsaquo;</button>
+                    <div class="phone-frame">
+                        <div class="phone-notch"></div>
+                        <img id="screenshot-img" alt="Mobile screenshot of entity website" style="display:none;">
+                        <p class="screenshot-placeholder" id="preview-fallback">Capturing first screenshot...</p>
+                    </div>
+                    <button class="carousel-arrow carousel-next" id="carousel-next" aria-label="Next capture" disabled>&rsaquo;</button>
+                </div>
+                <p class="carousel-counter" id="carousel-counter"></p>
             </div>
         </section>
 

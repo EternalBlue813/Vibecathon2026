@@ -494,27 +494,128 @@ button:disabled {
 
 .screenshot-area {
     text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
 }
 
-#status-preview-frame {
+.screenshot-timestamp {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.75rem;
+    letter-spacing: 0.02em;
+}
+
+.phone-frame {
+    position: relative;
+    width: 280px;
+    min-height: 560px;
+    background: #000;
+    border-radius: 36px;
+    padding: 12px;
+    box-shadow:
+        0 0 0 3px #1e293b,
+        0 0 0 6px #0f172a,
+        0 12px 40px -8px rgba(0, 0, 0, 0.7);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.phone-notch {
+    width: 100px;
+    height: 22px;
+    background: #000;
+    border-radius: 0 0 14px 14px;
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 2;
+}
+
+.phone-frame img {
     width: 100%;
-    min-height: 420px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 8px;
+    border-radius: 24px;
+    display: block;
     background: #0b1220;
 }
 
-.screenshot-area img {
-    max-width: 100%;
-    border-radius: 8px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+.screenshot-placeholder {
+    padding: 2rem 1rem;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    font-style: italic;
+    text-align: center;
 }
 
-.screenshot-placeholder {
-    padding: 2rem;
+.screenshot-carousel {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.carousel-arrow {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-primary);
+    font-size: 1.4rem;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+    flex-shrink: 0;
+}
+
+.carousel-arrow:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.14);
+    border-color: var(--accent-color);
+}
+
+.carousel-arrow:disabled {
+    opacity: 0.25;
+    cursor: default;
+}
+
+.carousel-counter {
+    font-size: 0.7rem;
     color: var(--text-secondary);
-    font-size: 0.85rem;
-    font-style: italic;
+    margin-top: 0.6rem;
+    letter-spacing: 0.04em;
+}
+
+@media (max-width: 600px) {
+    .screenshot-carousel {
+        gap: 0.5rem;
+    }
+    .carousel-arrow {
+        width: 32px;
+        height: 32px;
+        font-size: 1.1rem;
+    }
+}
+
+@media (max-width: 600px) {
+    .phone-frame {
+        width: 220px;
+        min-height: 440px;
+        border-radius: 28px;
+        padding: 10px;
+    }
+    .phone-notch {
+        width: 80px;
+        height: 18px;
+        border-radius: 0 0 10px 10px;
+    }
+    .phone-frame img {
+        border-radius: 18px;
+    }
 }
 
 .summary-text {

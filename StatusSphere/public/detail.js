@@ -3,8 +3,10 @@ const RELOAD_ENTITIES_URL = '/api/entities/reload';
 const ENTITY_META_URL = '/api/entity/';
 const STATUS_URL = '/status';
 const HISTORY_URL = '/history';
+const SCREENSHOT_URL = '/api/screenshot/';
 const MAX_HISTORY = 20;
 const POLL_INTERVAL = 120000;
+const SCREENSHOT_POLL_INTERVAL = 15000;
 
 let chart = null;
 let entitySlug = null;
@@ -35,21 +37,6 @@ function applyEntityMetaToPage() {
     if (statusLink) {
         statusLink.href = statusUrl;
         statusLink.textContent = statusUrl;
-    }
-
-    const frame = document.getElementById('status-preview-frame');
-    const previewFallback = document.getElementById('preview-fallback');
-    if (frame) {
-        if (statusUrl && statusUrl !== '#') {
-            const proxyUrl = `/api/proxy?url=${encodeURIComponent(statusUrl)}`;
-            frame.src = proxyUrl;
-            frame.style.display = 'block';
-            if (previewFallback) previewFallback.style.display = 'none';
-        } else {
-            frame.removeAttribute('src');
-            frame.style.display = 'none';
-            if (previewFallback) previewFallback.style.display = 'block';
-        }
     }
 
     updateLastFetch(entityMeta?.lastFetch || null);
@@ -94,11 +81,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     await refreshEntityDetailsFromDb();
 
     initChart();
+    initCarousel();
     await loadHistory();
     await fetchStatus();
     await fetchNews();
+    await fetchScreenshot();
 
     setInterval(fetchStatus, POLL_INTERVAL);
+    setInterval(fetchScreenshot, SCREENSHOT_POLL_INTERVAL);
 });
 
 function initChart() {
@@ -281,4 +271,90 @@ async function fetchNews() {
         list.innerHTML = '<li class="no-news">Failed to load news.</li>';
         console.error('Failed to fetch news:', e);
     }
+}
+
+let screenshotSnapshots = [];
+let screenshotIndex = -1;
+
+function renderScreenshotSlide() {
+    const img = document.getElementById('screenshot-img');
+    const fallback = document.getElementById('preview-fallback');
+    const timestampEl = document.getElementById('screenshot-timestamp');
+    const counterEl = document.getElementById('carousel-counter');
+    const prevBtn = document.getElementById('carousel-prev');
+    const nextBtn = document.getElementById('carousel-next');
+
+    if (screenshotSnapshots.length === 0) {
+        if (img) img.style.display = 'none';
+        if (fallback) { fallback.style.display = 'block'; fallback.textContent = 'Capturing first screenshot...'; }
+        if (timestampEl) timestampEl.textContent = 'Last capture: waiting...';
+        if (counterEl) counterEl.textContent = '';
+        if (prevBtn) prevBtn.disabled = true;
+        if (nextBtn) nextBtn.disabled = true;
+        return;
+    }
+
+    const snap = screenshotSnapshots[screenshotIndex];
+    if (!snap) return;
+
+    if (img) {
+        img.src = snap.url;
+        img.style.display = 'block';
+    }
+    if (fallback) fallback.style.display = 'none';
+
+    if (timestampEl && snap.capturedAt) {
+        const dt = new Date(snap.capturedAt);
+        timestampEl.textContent = `Captured: ${dt.toLocaleString()}`;
+    }
+
+    if (counterEl) {
+        counterEl.textContent = `${screenshotIndex + 1} / ${screenshotSnapshots.length}`;
+    }
+
+    if (prevBtn) prevBtn.disabled = screenshotIndex <= 0;
+    if (nextBtn) nextBtn.disabled = screenshotIndex >= screenshotSnapshots.length - 1;
+}
+
+function initCarousel() {
+    const prevBtn = document.getElementById('carousel-prev');
+    const nextBtn = document.getElementById('carousel-next');
+
+    if (prevBtn) {
+        prevBtn.addEventListener('click', () => {
+            if (screenshotIndex > 0) {
+                screenshotIndex--;
+                renderScreenshotSlide();
+            }
+        });
+    }
+    if (nextBtn) {
+        nextBtn.addEventListener('click', () => {
+            if (screenshotIndex < screenshotSnapshots.length - 1) {
+                screenshotIndex++;
+                renderScreenshotSlide();
+            }
+        });
+    }
+}
+
+async function fetchScreenshot() {
+    if (!entitySlug) return;
+
+    try {
+        const res = await fetch(`${SCREENSHOT_URL}${encodeURIComponent(entitySlug)}/history`);
+        const data = await res.json();
+
+        if (Array.isArray(data.snapshots) && data.snapshots.length > 0) {
+            const wasAtEnd = screenshotIndex === screenshotSnapshots.length - 1 || screenshotSnapshots.length === 0;
+            screenshotSnapshots = data.snapshots;
+            if (wasAtEnd) {
+                screenshotIndex = screenshotSnapshots.length - 1;
+            }
+        }
+    } catch (e) {
+        console.error('Failed to fetch screenshot history:', e);
+    }
+
+    renderScreenshotSlide();
 }
