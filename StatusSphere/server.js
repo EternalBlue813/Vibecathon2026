@@ -378,6 +378,16 @@ const STATUS_SIGNAL_SELECTORS = [
     '[class*="notification"]'
 ];
 
+const ALL_REGIONS = Object.keys(REGION_KEYWORDS);
+
+function classifyCloudStatus(incidents, regionImpact, healthScore) {
+    if (incidents.length === 0) return 'Healthy';
+    const affectedRegions = Object.keys(regionImpact).length;
+    const totalRegions = ALL_REGIONS.length;
+    if (healthScore <= 0.3 || affectedRegions >= totalRegions - 1) return 'Down';
+    return 'Partial';
+}
+
 function getRegion(text) {
     if (!text) return null;
     text = text.toLowerCase();
@@ -612,11 +622,15 @@ function parseStructuredStatusPayload(sourceUrl, payload) {
         || payload?.status?.description
         || payload?.indicator
         || payload?.status;
-    const status = mapIndicatorToStatus(indicator, incidents.length);
+    let status = mapIndicatorToStatus(indicator, incidents.length);
 
     const healthScore = totalComponents > 0
         ? operationalComponents / totalComponents
         : (incidents.length > 0 ? Math.max(0.05, 1 - incidents.length * 0.12) : 1);
+
+    if (incidents.length > 0 && status === 'Warning') {
+        status = classifyCloudStatus(incidents, regionImpact, healthScore);
+    }
 
     if (status === 'Unknown' && incidents.length === 0 && totalComponents === 0) {
         return null;
@@ -680,12 +694,18 @@ async function fetchStatuspageFallback(summaryUrl, entityName) {
         const statusPayload = statusResponse.data?.status || {};
         const unresolved = unresolvedResponse.data?.incidents || [];
         const incidents = unresolved.map((incident) => normalizeIncident(incident, summaryUrl, baseUrl));
+        const regionImpact = computeRegionImpact(incidents);
+        const healthScore = incidents.length > 0 ? Math.max(0.05, 1 - incidents.length * 0.1) : 1;
+        let status = mapIndicatorToStatus(statusPayload.indicator, incidents.length);
+        if (incidents.length > 0 && status === 'Warning') {
+            status = classifyCloudStatus(incidents, regionImpact, healthScore);
+        }
 
         return {
-            status: mapIndicatorToStatus(statusPayload.indicator, incidents.length),
-            healthScore: incidents.length > 0 ? Math.max(0.05, 1 - incidents.length * 0.1) : 1,
+            status,
+            healthScore,
             incidents,
-            regionImpact: computeRegionImpact(incidents)
+            regionImpact
         };
     } catch (error) {
         console.warn(`[StatusFetch] ${entityName}: fallback API blocked (${error.message})`);
