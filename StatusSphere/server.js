@@ -385,6 +385,16 @@ const REGION_KEYWORDS = {
     'AF': ['af-', 'africa', 'cape town', 'johannesburg', 'cairo', 'lagos']
 };
 
+const ALL_REGIONS = Object.keys(REGION_KEYWORDS);
+
+function classifyCloudStatus(incidents, regionImpact, healthScore) {
+    if (incidents.length === 0) return 'Healthy';
+    const affectedRegions = Object.keys(regionImpact).length;
+    const totalRegions = ALL_REGIONS.length;
+    if (healthScore <= 0.3 || affectedRegions >= totalRegions - 1) return 'Down';
+    return 'Partial';
+}
+
 const BANK_BANNER_SELECTORS = [
     '[role="alert"]',
     '[aria-live="assertive"]',
@@ -504,7 +514,7 @@ async function fetchStatusPage(name, url) {
         const totalComponents = components.length || 100;
         const operationalComponents = components.filter(c => c.status === 'operational').length;
         const healthScore = totalComponents > 0 ? operationalComponents / totalComponents : 1;
-        const status = data.status.indicator === 'none' ? 'Healthy' : 'Warning';
+        const status = classifyCloudStatus(incidents, regionImpact, healthScore);
 
         return { status, healthScore, incidents, regionImpact };
     } catch (error) {
@@ -531,9 +541,10 @@ async function fetchStatusPage(name, url) {
                     }
                 }
 
+                const healthScore = incidents.length > 0 ? Math.max(0, 1 - incidents.length * 0.1) : 1;
                 return {
-                    status: statusPayload.indicator === 'none' ? 'Healthy' : 'Warning',
-                    healthScore: incidents.length > 0 ? Math.max(0, 1 - incidents.length * 0.1) : 1,
+                    status: statusPayload.indicator === 'none' ? 'Healthy' : classifyCloudStatus(incidents, regionImpact, healthScore),
+                    healthScore,
                     incidents,
                     regionImpact
                 };
@@ -586,7 +597,6 @@ const PARTIAL_OUTAGE_PHRASES = [
     'partially affected',
     'login.*unavailable',
     'banking.*unavailable',
-    'maintenance',
     'we apologise',
     'we apologize',
     'working to resolve',
@@ -645,14 +655,14 @@ function extractBankIssueByKeywords(rawText) {
         .map((line) => line.replace(/\s+/g, ' ').trim())
         .filter(Boolean);
 
-    const maintHit = matchPhraseList(MAINTENANCE_PHRASES, normalized, lines);
-    if (maintHit) return { text: maintHit, type: 'maintenance' };
-
     const fullHit = matchPhraseList(FULL_OUTAGE_PHRASES, normalized, lines);
     if (fullHit) return { text: fullHit, type: 'full' };
 
     const partialHit = matchPhraseList(PARTIAL_OUTAGE_PHRASES, normalized, lines);
     if (partialHit) return { text: partialHit, type: 'partial' };
+
+    const maintHint = matchPhraseList(MAINTENANCE_PHRASES, normalized, lines);
+    if (maintHint) return { text: maintHint, type: 'maintenance_hint' };
 
     return null;
 }
@@ -678,9 +688,10 @@ async function detectBankIssueWithLLM(bankName, signalText) {
     }
 
     const keywordHit = extractBankIssueByKeywords(signalText);
-    if (keywordHit) {
+
+    if (keywordHit && keywordHit.type !== 'maintenance_hint') {
         const cleanSummary = stripMarkers(keywordHit.text);
-        const severityMap = { full: 0.9, partial: 0.5, maintenance: 0.3 };
+        const severityMap = { full: 0.9, partial: 0.5 };
         const severity = severityMap[keywordHit.type] || 0.5;
         console.log(`[BankStatus] ${bankName}: keyword match (${keywordHit.type}) — "${cleanSummary}"`);
         return { hasIssue: true, summary: cleanSummary, severity, type: keywordHit.type };
@@ -690,19 +701,39 @@ async function detectBankIssueWithLLM(bankName, signalText) {
         return { hasIssue: false, summary: '', severity: 0 };
     }
 
+    const sgtNow = new Date().toLocaleString('en-SG', { timeZone: 'Asia/Singapore', dateStyle: 'full', timeStyle: 'short' });
     const truncated = stripMarkers(signalText).slice(0, 6000);
+    const maintenanceHint = keywordHit?.type === 'maintenance_hint'
+        ? '\nNote: the page contains the word "maintenance" — but this may just be a navigation link (e.g. "Maintenance Schedule"). Only classify as maintenance if the page explicitly states maintenance is CURRENTLY HAPPENING with a date/time window that includes right now.'
+        : '';
+
     let verdict = null;
     try {
         verdict = await callLLM([
             {
                 role: 'system',
-                content: 'You classify bank status-page content. Decide if there is an active service problem. Return ONLY JSON with keys: hasIssue (boolean), summary (string <= 180 chars), severity (number 0..1), type ("partial" | "full" | "maintenance" | "none"). hasIssue=true only for active incidents, maintenance, outages, disruptions, service degradation, or login/access problems. type="maintenance" when the page indicates scheduled maintenance, planned downtime, or system maintenance in progress. type="partial" when only SOME services are affected (e.g. fund transfers, payments, PayNow, specific channels). type="full" when the entire system or website is down/unreachable. severity: 0.2-0.4 for maintenance, 0.4-0.6 for partial, 0.8-1.0 for full outage, 0 when hasIssue=false. Do not infer from generic marketing text.'
+                content: `You classify bank status-page content. The current date and time in Singapore (SGT) is: ${sgtNow}.
+
+Return ONLY JSON: { hasIssue: boolean, summary: string (<=180 chars), severity: number 0..1, type: "partial"|"full"|"maintenance"|"none" }
+
+CLASSIFICATION RULES:
+- type="maintenance" ONLY when ALL of these are true:
+  1. The page explicitly announces a maintenance window with specific start and end times/dates.
+  2. The current SGT time (${sgtNow}) falls WITHIN that maintenance window.
+  3. The maintenance notice is a prominent banner/announcement, NOT a mere navigation link like "Maintenance Schedule" or "View maintenance calendar".
+- type="partial" when some services are affected (e.g. fund transfers, payments, specific channels) but the system is not fully down.
+- type="full" when the entire system or website is down/unreachable.
+- type="none" when there is no active issue. hasIssue must be false and severity must be 0.
+
+IMPORTANT: Words like "maintenance", "system maintenance", or "maintenance schedule" appearing as hyperlinks, menu items, or navigation elements do NOT indicate active maintenance. Only explicit announcements with time windows count.
+
+severity: 0.2-0.4 for maintenance, 0.4-0.6 for partial, 0.8-1.0 for full, 0 when none.`
             },
             {
                 role: 'user',
-                content: `Bank: ${bankName}\nStatus page content:\n${truncated}`
+                content: `Bank: ${bankName}\nCurrent SGT: ${sgtNow}${maintenanceHint}\nStatus page content:\n${truncated}`
             }
-        ], 120);
+        ], 150);
     } catch (e) {
         console.warn('[LLM] Bank detection failed:', e.message);
     }
@@ -714,19 +745,27 @@ async function detectBankIssueWithLLM(bankName, signalText) {
         return { hasIssue: false, summary: '', severity: 0 };
     }
 
+    const validTypes = ['partial', 'full', 'maintenance', 'none'];
+    const parsedType = validTypes.includes(parsed.type) ? parsed.type : 'none';
+
+    if (parsedType === 'none' || !parsed.hasIssue) {
+        return { hasIssue: false, summary: '', severity: 0 };
+    }
+
     const severityNum = Number(parsed.severity);
     const severity = Number.isFinite(severityNum)
         ? Math.max(0, Math.min(1, severityNum))
-        : (parsed.hasIssue ? 0.45 : 0);
+        : (parsedType === 'maintenance' ? 0.3 : parsedType === 'full' ? 0.9 : 0.5);
 
     const cleanedSummary = typeof parsed.summary === 'string'
         ? stripMarkers(parsed.summary).slice(0, 220)
         : '';
 
     return {
-        hasIssue: parsed.hasIssue,
+        hasIssue: true,
         summary: cleanedSummary,
-        severity: parsed.hasIssue ? Math.max(0.2, severity) : 0
+        severity: Math.max(0.2, severity),
+        type: parsedType
     };
 }
 
@@ -838,7 +877,7 @@ async function fetchAWS() {
         });
 
         const healthScore = Math.max(0, (TOTAL_SERVICES_AWS - incidents.length) / TOTAL_SERVICES_AWS);
-        const status = incidents.length > 0 ? 'Warning' : 'Healthy';
+        const status = classifyCloudStatus(incidents, regionImpact, healthScore);
 
         return { status, healthScore, incidents, regionImpact };
     } catch (error) {
@@ -870,7 +909,7 @@ async function fetchGCP() {
         });
 
         const healthScore = Math.max(0, (TOTAL_SERVICES_GCP - incidents.length) / TOTAL_SERVICES_GCP);
-        const status = incidents.length > 0 ? 'Warning' : 'Healthy';
+        const status = classifyCloudStatus(incidents, regionImpact, healthScore);
 
         return { status, healthScore, incidents, regionImpact };
     } catch (error) {
@@ -903,7 +942,7 @@ async function fetchAzure() {
         });
 
         const healthScore = Math.max(0, (TOTAL_SERVICES_AZURE - incidents.length) / TOTAL_SERVICES_AZURE);
-        const status = incidents.length > 0 ? 'Warning' : 'Healthy';
+        const status = classifyCloudStatus(incidents, regionImpact, healthScore);
 
         return { status, healthScore, incidents, regionImpact };
     } catch (error) {
