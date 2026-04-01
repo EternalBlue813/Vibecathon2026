@@ -5,6 +5,21 @@ const fs = require('fs');
 const MOBILE_VIEWPORT = { width: 375, height: 812, isMobile: true, hasTouch: true, deviceScaleFactor: 2 };
 const PAGE_TIMEOUT = 20000;
 const SCREENSHOT_INTERVAL = 60 * 1000;
+
+const SLUG_CAPTURE_OVERRIDES = {
+    citi: {
+        waitUntil: 'domcontentloaded',
+        navigationTimeoutMs: 45000,
+        settleMs: 4000,
+        fallbackUrl: 'https://www.citibank.com.sg/',
+    },
+    ocbc: {
+        waitUntil: 'domcontentloaded',
+        navigationTimeoutMs: 45000,
+        settleMs: 3500,
+        fallbackUrl: 'https://www.ocbc.com',
+    },
+};
 const MAX_SNAPSHOTS = 5;
 const BUCKET = 'entity-image-snapshot';
 
@@ -43,6 +58,7 @@ async function ensureBrowser() {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
+        '--disable-blink-features=AutomationControlled',
     ];
 
     try {
@@ -103,6 +119,33 @@ async function uploadToSupabase(slug, buffer, slotIndex) {
     return urlData?.publicUrl || null;
 }
 
+async function navigateForScreenshot(page, slug, primaryUrl) {
+    const override = SLUG_CAPTURE_OVERRIDES[slug] || {};
+    const waitUntil = override.waitUntil || 'networkidle2';
+    const navigationTimeoutMs = override.navigationTimeoutMs || PAGE_TIMEOUT;
+    const settleMs = override.settleMs ?? 1500;
+    const urls = [primaryUrl];
+    if (override.fallbackUrl && override.fallbackUrl !== primaryUrl) {
+        urls.push(override.fallbackUrl);
+    }
+
+    let lastError = null;
+    for (const tryUrl of urls) {
+        try {
+            await page.goto(tryUrl, { waitUntil, timeout: navigationTimeoutMs });
+            await new Promise(r => setTimeout(r, settleMs));
+            if (urls.length > 1 && tryUrl !== primaryUrl) {
+                console.log(`[Screenshot] ${slug}: captured using fallback URL`);
+            }
+            return;
+        } catch (e) {
+            lastError = e;
+            console.warn(`[Screenshot] ${slug}: navigate failed for ${tryUrl} — ${e.message}`);
+        }
+    }
+    throw lastError || new Error('Navigation failed');
+}
+
 async function captureScreenshot(slug, url) {
     if (!url) return null;
 
@@ -114,9 +157,16 @@ async function captureScreenshot(slug, url) {
         await page.setUserAgent(
             'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
         );
+        await page.setExtraHTTPHeaders({
+            'Accept-Language': 'en-SG,en;q=0.9',
+        });
+        await page.evaluateOnNewDocument(() => {
+            try {
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            } catch { /* ignore */ }
+        });
 
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: PAGE_TIMEOUT });
-        await new Promise(r => setTimeout(r, 1500));
+        await navigateForScreenshot(page, slug, url);
 
         const buffer = await page.screenshot({ type: 'png', fullPage: false });
 

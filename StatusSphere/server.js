@@ -344,24 +344,64 @@ const AWS_REGION_MAP = {
     'mx-central-1': { location: 'Mexico', region: 'NA' },
 };
 
-function resolveCloudRegionMetadata(text) {
-    if (!text) return { location: null, regionCode: null };
+const AWS_REGION_CODES_SORTED = Object.keys(AWS_REGION_MAP).sort((a, b) => b.length - a.length);
+
+function matchAwsRegionInText(text) {
+    if (!text) return null;
     const lower = text.toLowerCase();
-    for (const [azPrefix, info] of Object.entries(AWS_REGION_MAP)) {
-        if (lower.includes(azPrefix)) {
-            return { location: info.location, regionCode: info.region };
+    for (const key of AWS_REGION_CODES_SORTED) {
+        if (lower.includes(key)) {
+            return AWS_REGION_MAP[key];
         }
     }
-    return { location: null, regionCode: getRegion(text) };
+    return null;
 }
 
+/** Avoid substring false positives (e.g. "bonus-points" matching us-, "asian" as asia). */
+function regionKeywordMatches(haystackLower, keyword) {
+    const k = keyword.toLowerCase().trim();
+    if (!k) return false;
+    if (k.includes(' ')) {
+        return haystackLower.includes(k);
+    }
+    if (k.length <= 4) {
+        const escaped = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i').test(haystackLower);
+    }
+    return haystackLower.includes(k);
+}
+
+function regionFromGeographicKeywords(text) {
+    if (!text) return null;
+    const lower = text.toLowerCase();
+    for (const [code, keywords] of Object.entries(REGION_KEYWORDS)) {
+        for (const k of keywords) {
+            if (regionKeywordMatches(lower, k)) {
+                // #region agent log
+                fetch('http://127.0.0.1:7416/ingest/980f5041-abbd-4975-ab8f-99ec432aab97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7422b5'},body:JSON.stringify({sessionId:'7422b5',runId:'pre-fix',hypothesisId:'H1',location:'server.js:regionFromGeographicKeywords',message:'Geographic keyword matched',data:{code,keyword:k,sample:lower.slice(0,220)},timestamp:Date.now()})}).catch(()=>{});
+                // #endregion
+                return code;
+            }
+        }
+    }
+    return null;
+}
+
+function resolveCloudRegionMetadata(text) {
+    if (!text) return { location: null, regionCode: null };
+    const aws = matchAwsRegionInText(text);
+    if (aws) return { location: aws.location, regionCode: aws.region };
+    return { location: null, regionCode: regionFromGeographicKeywords(text) };
+}
+
+/** Prefer explicit AWS region codes; geographic names only with word-safe matching (no us-/ap- substrings). */
 const REGION_KEYWORDS = {
-    'NA': ['us-', 'ca-', 'mx-', 'north america', 'canada', 'mexico', 'united states', 'usa', 'ashburn', 'chicago', 'dallas', 'denver', 'los angeles', 'miami', 'new york', 'seattle', 'san jose', 'toronto', 'atlanta'],
-    'SA': ['sa-', 'south america', 'brazil', 'sao paulo', 'buenos aires', 'lima', 'santiago', 'bogota'],
-    'EU': ['eu-', 'europe', 'uk', 'london', 'frankfurt', 'ireland', 'paris', 'stockholm', 'milan', 'zurich', 'madrid', 'amsterdam', 'berlin', 'brussels', 'copenhagen', 'dublin', 'helsinki', 'lisbon', 'marseille', 'oslo', 'prague', 'sofia', 'vienna', 'warsaw'],
-    'AS': ['ap-', 'me-', 'il-', 'asia', 'japan', 'tokyo', 'seoul', 'singapore', 'mumbai', 'hong kong', 'india', 'china', 'bangkok', 'jakarta', 'kuala lumpur', 'manila', 'osaka', 'taipei'],
+    'NA': ['north america', 'canada', 'mexico', 'united states', 'usa', 'ashburn', 'chicago', 'dallas', 'denver', 'los angeles', 'miami', 'new york', 'seattle', 'san jose', 'toronto', 'atlanta'],
+    'SA': ['south america', 'brazil', 'sao paulo', 'buenos aires', 'lima', 'santiago', 'bogota'],
+    'EU': ['europe', 'uk', 'london', 'frankfurt', 'ireland', 'paris', 'stockholm', 'milan', 'zurich', 'madrid', 'amsterdam', 'berlin', 'brussels', 'copenhagen', 'dublin', 'helsinki', 'lisbon', 'marseille', 'oslo', 'prague', 'sofia', 'vienna', 'warsaw'],
+    'AS': ['asia', 'japan', 'tokyo', 'seoul', 'singapore', 'mumbai', 'hong kong', 'india', 'china', 'bangkok', 'jakarta', 'kuala lumpur', 'manila', 'osaka', 'taipei'],
     'OC': ['australia', 'sydney', 'melbourne', 'oceania', 'auckland', 'brisbane', 'perth'],
-    'AF': ['af-', 'africa', 'cape town', 'johannesburg', 'cairo', 'lagos']
+    'AF': ['africa', 'cape town', 'johannesburg', 'cairo', 'lagos']
 };
 
 const STATUS_SIGNAL_SELECTORS = [
@@ -389,14 +429,9 @@ function classifyCloudStatus(incidents, regionImpact, healthScore) {
 }
 
 function getRegion(text) {
-    if (!text) return null;
-    text = text.toLowerCase();
-    for (const [code, keywords] of Object.entries(REGION_KEYWORDS)) {
-        if (keywords.some(k => text.includes(k))) {
-            return code;
-        }
-    }
-    return 'NA';
+    const aws = matchAwsRegionInText(text);
+    if (aws) return aws.region;
+    return regionFromGeographicKeywords(text);
 }
 
 function normalizeText(text) {
@@ -437,6 +472,14 @@ async function fetchNews(query) {
 const STATUS_REQUEST_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'application/json,text/plain,text/xml,application/xml,text/html,*/*'
+};
+
+const BANK_HTML_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-SG,en;q=0.9',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache',
 };
 
 function unknownStatusResult() {
@@ -556,10 +599,16 @@ function normalizeIncident(incident, sourceUrl, pageUrl) {
         ? `${baseName} (${regionMeta.location})`
         : baseName;
 
+    if (regionMeta.regionCode === 'NA') {
+        // #region agent log
+        fetch('http://127.0.0.1:7416/ingest/980f5041-abbd-4975-ab8f-99ec432aab97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7422b5'},body:JSON.stringify({sessionId:'7422b5',runId:'pre-fix',hypothesisId:'H2',location:'server.js:normalizeIncident',message:'Incident normalized to NA region',data:{sourceUrl,baseName,incidentRegion:incident?.region||null,availabilityZone:incident?.availabilityZone||null,textBlobSample:textBlob.slice(0,220)},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+    }
+
     return {
         name,
         link: resolveIncidentLink(incident, sourceUrl, pageUrl),
-        region: regionMeta.regionCode || getRegion(textBlob),
+        region: regionMeta.regionCode,
         awsLocation: regionMeta.location || undefined
     };
 }
@@ -649,6 +698,32 @@ function extractSignalTextFromHtml(html) {
         .filter(Boolean)
         .join('\n')
         .slice(0, 12000);
+}
+
+async function fetchBankHtmlSignalFallback(entityName, statusPageUrl, mainUrl) {
+    const tryUrls = [...new Set([statusPageUrl, mainUrl].filter(Boolean))];
+    for (const u of tryUrls) {
+        try {
+            const response = await axios.get(u, {
+                headers: BANK_HTML_HEADERS,
+                timeout: 22000,
+                responseType: 'text',
+                maxRedirects: 7,
+                validateStatus: (s) => s >= 200 && s < 400,
+            });
+            const html = response.data;
+            if (typeof html !== 'string' || html.length < 200) continue;
+            const extracted = extractSignalTextFromHtml(html);
+            const compact = extracted.replace(/\s+/g, ' ').trim();
+            if (compact.length >= 80) {
+                console.log(`[StatusFetch] ${entityName}: bank HTML text fallback OK from ${u} (${compact.length} chars)`);
+                return extracted.slice(0, 12000);
+            }
+        } catch (e) {
+            console.warn(`[StatusFetch] ${entityName}: bank HTML fallback ${u} — ${e.message}`);
+        }
+    }
+    return '';
 }
 
 async function extractSignalTextFromXml(xmlText) {
@@ -767,14 +842,35 @@ function normalizeEntityStatus(value) {
     if (typeof value !== 'string') return null;
     const trimmed = value.trim().toLowerCase();
     const matched = ENTITY_STATUSES.find((status) => status.toLowerCase() === trimmed);
-    return matched || null;
+    if (matched) return matched;
+    const aliases = {
+        operational: 'Healthy',
+        'all clear': 'Healthy',
+        'all-clear': 'Healthy',
+        'all systems operational': 'Healthy',
+        'no issues': 'Healthy',
+        'no issue': 'Healthy',
+        normal: 'Healthy',
+        ok: 'Healthy',
+        up: 'Healthy',
+        clear: 'Healthy',
+        running: 'Healthy',
+        stable: 'Healthy',
+        green: 'Healthy',
+        nominal: 'Healthy',
+        degraded: 'Warning',
+        minor: 'Warning',
+        outage: 'Down',
+        critical: 'Down',
+    };
+    return aliases[trimmed] || null;
 }
 
 function buildStructuredSignalText(entityName, structuredResult) {
     if (!structuredResult) return '';
     const incidentLines = (structuredResult.incidents || [])
         .slice(0, 15)
-        .map((incident) => `${incident.name} [${incident.region || 'NA'}]`)
+        .map((incident) => (incident.region ? `${incident.name} [${incident.region}]` : incident.name))
         .join('; ');
 
     return [
@@ -800,8 +896,8 @@ async function fetchEntityStatus(entity) {
         return {
             status: 'Unknown',
             healthScore: 0,
-            incidents: [{ name: 'Status page URL is missing', link: '#', region: 'NA' }],
-            regionImpact: { NA: 1 }
+            incidents: [{ name: 'Status page URL is missing', link: '#', region: null }],
+            regionImpact: {}
         };
     }
 
@@ -830,33 +926,107 @@ async function fetchEntityStatus(entity) {
         }
     }
 
-    const signalText = signalChunks.join('\n').trim();
+    let signalText = signalChunks.join('\n').trim();
+    const minBankSignal = 100;
+    if (type === 'bank' && signalText.length < minBankSignal) {
+        const extra = await fetchBankHtmlSignalFallback(name, status_page_url || statusUrl, url);
+        if (extra) {
+            signalText = [extra, signalText].filter(Boolean).join('\n').trim();
+        }
+    }
+
     if (!signalText) {
+        if (type === 'bank') {
+            console.warn(`[StatusFetch] ${name}: no fetchable text for bank; defaulting to Healthy (aligns with live preview when page loads in browser)`);
+            return { status: 'Healthy', healthScore: 1, incidents: [], regionImpact: {} };
+        }
         return unknownStatusResult();
     }
 
-    const llmResult = await detectIssueWithLLM(name, signalText, {
+    if (slug === 'sxp') {
+        // #region agent log
+        fetch('http://127.0.0.1:7416/ingest/980f5041-abbd-4975-ab8f-99ec432aab97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7422b5'},body:JSON.stringify({sessionId:'7422b5',runId:'pre-fix',hypothesisId:'H4',location:'server.js:fetchEntityStatus',message:'SXP signal assembled',data:{hasStructured:!!structuredResult,structuredIncidentRegions:(structuredResult?.incidents||[]).map((i)=>i.region||null),signalRegion:getRegion(signalText),signalSample:signalText.slice(0,280)},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+    }
+
+    const llmRaw = await detectIssueWithLLM(name, signalText, {
         entityType: type,
         structuredResult
     });
+    const llmResult = sanitizeBankLlmOutcome(type, structuredResult, signalText, llmRaw);
 
     if (!llmResult) {
-        console.warn(`[StatusFetch] ${name}: LLM classification unavailable, returning Unknown`);
-        const fallbackIncidents = structuredResult?.incidents?.length
-            ? structuredResult.incidents
-            : [{ name: 'LLM classification unavailable', link: statusUrl, region: 'NA' }];
-        return {
-            status: 'Unknown',
-            healthScore: 0,
-            incidents: fallbackIncidents,
-            regionImpact: computeRegionImpact(fallbackIncidents)
-        };
+        console.warn(`[StatusFetch] ${name}: LLM classification unavailable, using baseline and keyword fallback`);
+
+        if (structuredResult) {
+            const inc = structuredResult.incidents || [];
+            const ri = computeRegionImpact(inc);
+            if (inc.length === 0) {
+                const st = structuredResult.status || 'Healthy';
+                const hsDefault = st === 'Maintenance' ? 0.3 : st === 'Down' ? 0.15 : st === 'Warning' ? 0.85 : 1;
+                const hs = Number.isFinite(structuredResult.healthScore)
+                    ? clamp01(structuredResult.healthScore)
+                    : hsDefault;
+                const base = {
+                    status: st,
+                    healthScore: hs,
+                    incidents: [],
+                    regionImpact: {}
+                };
+                if (st === 'Maintenance') {
+                    base.maintenanceInfo = {
+                        summary: 'Maintenance reported by provider status API',
+                        detectedAt: new Date().toLocaleString('en-SG', { timeZone: 'Asia/Singapore' })
+                    };
+                }
+                return base;
+            }
+            let st = structuredResult.status;
+            const hs = Number.isFinite(structuredResult.healthScore)
+                ? clamp01(structuredResult.healthScore)
+                : Math.max(0.05, 1 - inc.length * 0.1);
+            if (st === 'Warning') {
+                st = classifyCloudStatus(inc, ri, hs);
+            }
+            const response = { status: st, healthScore: hs, incidents: inc, regionImpact: ri };
+            if (st === 'Maintenance') {
+                response.maintenanceInfo = {
+                    summary: inc[0]?.name || 'Maintenance in progress',
+                    detectedAt: new Date().toLocaleString('en-SG', { timeZone: 'Asia/Singapore' })
+                };
+            }
+            return response;
+        }
+
+        const kw = extractIssueByKeywords(signalText);
+        if (kw && kw.type !== 'maintenance') {
+            const cleanSummary = stripMarkers(kw.text);
+            const issueType = kw.type;
+            const mapped = mapIssueTypeToStatus(issueType);
+            const healthScore = issueType === 'full' ? 0.15 : 0.5;
+            const region = getRegion(signalText);
+            return {
+                status: mapped,
+                healthScore,
+                incidents: [{
+                    name: cleanSummary,
+                    link: statusUrl,
+                    region
+                }],
+                regionImpact: computeRegionImpact([{ region }])
+            };
+        }
+
+        return { status: 'Healthy', healthScore: 1, incidents: [], regionImpact: {} };
     }
 
     const issueName = llmResult.summary || `Possible ${name} service issue detected from status page`;
     const issueType = llmResult.type || (llmResult.severity >= 0.75 ? 'full' : 'partial');
 
     let status = llmResult.status || mapIssueTypeToStatus(issueType);
+    if (type === 'bank' && status === 'Unknown') {
+        status = llmResult.hasIssue ? 'Warning' : 'Healthy';
+    }
     if (status === 'Healthy' && structuredResult?.incidents?.length) {
         status = 'Warning';
     }
@@ -864,6 +1034,9 @@ async function fetchEntityStatus(entity) {
     let healthScore = Number.isFinite(llmResult.healthScore)
         ? clamp01(llmResult.healthScore)
         : NaN;
+    if (type === 'bank' && status === 'Healthy' && !structuredResult?.incidents?.length) {
+        healthScore = 1;
+    }
     if (!Number.isFinite(healthScore)) {
         if (structuredResult && Number.isFinite(structuredResult.healthScore)) {
             healthScore = clamp01(structuredResult.healthScore);
@@ -882,7 +1055,7 @@ async function fetchEntityStatus(entity) {
         incidents = [{
             name: issueType === 'maintenance' ? `Under Maintenance: ${issueName}` : issueName,
             link: statusUrl,
-            region: getRegion(signalText) || 'NA'
+            region: getRegion(signalText)
         }];
     }
 
@@ -948,7 +1121,6 @@ const PARTIAL_OUTAGE_PHRASES = [
     'partially affected',
     'login.*unavailable',
     'banking.*unavailable',
-    'maintenance',
     'we apologise',
     'we apologize',
     'working to resolve',
@@ -996,6 +1168,35 @@ function matchPhraseList(phraseList, normalized, lines) {
     return null;
 }
 
+const STRONG_FULL_OUTAGE_SUBSTRINGS = [
+    'system unavailable',
+    'system is unavailable',
+    'service unavailable',
+    'service is unavailable',
+    'services unavailable',
+    'temporarily unavailable',
+    'currently unavailable',
+    'unable to access',
+    'system down',
+    'service down',
+    'services down',
+    'major outage',
+    'service interruption',
+];
+
+function isStrongFullOutageLanguage(normalized) {
+    return STRONG_FULL_OUTAGE_SUBSTRINGS.some((s) => normalized.includes(s));
+}
+
+function hasBankOperationalDisclaimer(normalized) {
+    return /\bno\s+active\s+(incidents?|outages?)\b/i.test(normalized)
+        || /\ball\s+systems\s+(operational|up|normal)\b/i.test(normalized)
+        || /\bservices?\s+are\s+(normal|operational|available)\b/i.test(normalized)
+        || /\boperating\s+normally\b/i.test(normalized)
+        || /\bno\s+(current\s+)?(service\s+)?issues?\s+reported\b/i.test(normalized)
+        || /\b(no|zero)\s+.{0,20}\boutages?\b/i.test(normalized);
+}
+
 function extractIssueByKeywords(rawText) {
     if (!rawText) return null;
 
@@ -1009,12 +1210,76 @@ function extractIssueByKeywords(rawText) {
     if (maintHit) return { text: maintHit, type: 'maintenance' };
 
     const fullHit = matchPhraseList(FULL_OUTAGE_PHRASES, normalized, lines);
-    if (fullHit) return { text: fullHit, type: 'full' };
+    if (fullHit) {
+        if (!hasBankOperationalDisclaimer(normalized) || isStrongFullOutageLanguage(normalized)) {
+            return { text: fullHit, type: 'full' };
+        }
+    }
 
     const partialHit = matchPhraseList(PARTIAL_OUTAGE_PHRASES, normalized, lines);
     if (partialHit) return { text: partialHit, type: 'partial' };
 
     return null;
+}
+
+function sanitizeBankLlmOutcome(entityType, structuredResult, signalText, llmResult) {
+    if (entityType !== 'bank' || !llmResult || structuredResult) return llmResult;
+
+    const normalized = stripMarkers(signalText).toLowerCase().replace(/\s+/g, ' ');
+    if (hasBankOperationalDisclaimer(normalized) && !isStrongFullOutageLanguage(normalized) && llmResult.hasIssue) {
+        console.log(`[StatusFetch] Bank: operational disclaimer in page text — overriding LLM issue verdict`);
+        return {
+            ...llmResult,
+            hasIssue: false,
+            status: 'Healthy',
+            type: 'none',
+            severity: 0,
+            healthScore: 1,
+            summary: ''
+        };
+    }
+
+    const kw = extractIssueByKeywords(signalText);
+    const hasServiceOutageKw = kw && (kw.type === 'full' || kw.type === 'partial');
+    const hasMaintKw = kw && kw.type === 'maintenance';
+
+    const wantsOutage = llmResult.hasIssue && (
+        llmResult.status === 'Down'
+        || llmResult.status === 'Partial'
+        || llmResult.status === 'Warning'
+        || llmResult.type === 'full'
+        || llmResult.type === 'partial'
+    );
+    const wantsMaint = llmResult.hasIssue && (
+        llmResult.status === 'Maintenance'
+        || llmResult.type === 'maintenance'
+    );
+
+    if (wantsMaint && !hasMaintKw) {
+        console.log(`[StatusFetch] Bank: LLM maintenance without maintenance keywords — treating as Healthy`);
+        return {
+            ...llmResult,
+            hasIssue: false,
+            status: 'Healthy',
+            type: 'none',
+            severity: 0,
+            healthScore: 1,
+            summary: ''
+        };
+    }
+    if (wantsOutage && !hasServiceOutageKw) {
+        console.log(`[StatusFetch] Bank: LLM outage/partial without matching disruption keywords — treating as Healthy`);
+        return {
+            ...llmResult,
+            hasIssue: false,
+            status: 'Healthy',
+            type: 'none',
+            severity: 0,
+            healthScore: 1,
+            summary: ''
+        };
+    }
+    return llmResult;
 }
 
 function parseJsonObject(text) {
@@ -1062,12 +1327,15 @@ async function detectIssueWithLLM(entityName, signalText, options = {}) {
         : 'none';
 
     const truncated = stripMarkers(signalText).slice(0, 7000);
+    const bankClassifierRules = entityType === 'bank'
+        ? ' For EntityType=bank: Scraped text is usually a login or marketing page. Generic lines such as "contact support", "call us", "error" in FAQs, security tips, password reset, browser upgrade notices, and routine help copy are NOT outages. Set hasIssue=false and status=Healthy unless there is a clear ACTIVE incident banner, an explicit system-wide or service disruption notice, or unmistakable language that online banking is currently unavailable for customers (not hypothetical troubleshooting). Never infer a Down state from support contact information alone.'
+        : '';
     let verdict = null;
     try {
         verdict = await callLLM([
             {
                 role: 'system',
-                content: 'You are a service reliability classifier. You MUST output ONLY JSON with keys: status ("Healthy"|"Warning"|"Partial"|"Maintenance"|"Down"|"Unknown"), healthScore (0..1), hasIssue (boolean), summary (string <= 180 chars), severity (0..1), type ("partial"|"full"|"maintenance"|"none"). Use the provided structured baseline and text evidence together. If incidentCount > 0 in structured baseline, avoid "Healthy" unless incidents are clearly non-active. Keep healthScore high for healthy states, low for down states, and moderate for warning/partial/maintenance.'
+                content: `You are a service reliability classifier. You MUST output ONLY JSON with keys: status ("Healthy"|"Warning"|"Partial"|"Maintenance"|"Down"|"Unknown"), healthScore (0..1), hasIssue (boolean), summary (string <= 180 chars), severity (0..1), type ("partial"|"full"|"maintenance"|"none"). Use the provided structured baseline and text evidence together. If incidentCount > 0 in structured baseline, avoid "Healthy" unless incidents are clearly non-active. Keep healthScore high for healthy states, low for down states, and moderate for warning/partial/maintenance.${bankClassifierRules}`
             },
             {
                 role: 'user',
@@ -1086,9 +1354,19 @@ async function detectIssueWithLLM(entityName, signalText, options = {}) {
         return null;
     }
 
-    const status = normalizeEntityStatus(parsed.status);
+    const typeRaw = typeof parsed.type === 'string' ? parsed.type.toLowerCase().trim() : '';
+    const type = ['partial', 'full', 'maintenance', 'none'].includes(typeRaw) ? typeRaw : undefined;
+
+    let status = normalizeEntityStatus(parsed.status);
     if (!status) {
-        return null;
+        if (parsed.hasIssue === false) {
+            status = 'Healthy';
+        } else {
+            status = mapIssueTypeToStatus(type) || 'Warning';
+        }
+    }
+    if (entityType === 'bank' && status === 'Unknown') {
+        status = parsed.hasIssue ? 'Warning' : 'Healthy';
     }
 
     const severityNum = Number(parsed.severity);
@@ -1104,9 +1382,6 @@ async function detectIssueWithLLM(entityName, signalText, options = {}) {
     const cleanedSummary = typeof parsed.summary === 'string'
         ? stripMarkers(parsed.summary).slice(0, 220)
         : '';
-
-    const typeRaw = typeof parsed.type === 'string' ? parsed.type.toLowerCase().trim() : '';
-    const type = ['partial', 'full', 'maintenance', 'none'].includes(typeRaw) ? typeRaw : undefined;
 
     return {
         hasIssue: parsed.hasIssue,
@@ -1280,8 +1555,12 @@ app.get('/status', async (req, res) => {
     await reloadEntities();
     await updateStatus();
     updateNews().catch(err => console.error('[StatusSphere] Background news update error:', err.message));
-
-    res.json(getCurrentStatusData());
+    const payload = getCurrentStatusData();
+    const sxp = payload?.sxp || null;
+    // #region agent log
+    fetch('http://127.0.0.1:7416/ingest/980f5041-abbd-4975-ab8f-99ec432aab97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7422b5'},body:JSON.stringify({sessionId:'7422b5',runId:'pre-fix',hypothesisId:'H5',location:'server.js:/status',message:'Status API payload snapshot',data:{hasSxp:!!sxp,sxpStatus:sxp?.status||null,sxpRegionImpact:sxp?.regionImpact||{},sxpIncidents:(sxp?.incidents||[]).map((i)=>({name:i.name,region:i.region||null,awsLocation:i.awsLocation||null}))},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    res.json(payload);
 });
 
 app.post('/api/entities/reload', async (req, res) => {

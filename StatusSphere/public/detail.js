@@ -275,6 +275,22 @@ function updateBadge(status) {
     }
 }
 
+const REGION_DISPLAY_LABELS = {
+    NA: 'North America',
+    SA: 'South America',
+    EU: 'Europe',
+    AS: 'Asia',
+    OC: 'Oceania',
+    AF: 'Africa',
+};
+
+function formatRegionImpactNote(regionImpact) {
+    const keys = Object.keys(regionImpact || {});
+    if (keys.length === 0) return '';
+    const labels = keys.map((code) => REGION_DISPLAY_LABELS[code] || code);
+    return ` Affected regions: ${labels.join(', ')}.`;
+}
+
 function updateMaintenanceOverlay(status) {
     const wrapper = document.getElementById('chart-wrapper');
     if (!wrapper) return;
@@ -301,11 +317,7 @@ function updateSummary(info) {
         return desc;
     });
 
-    const regionImpact = info.regionImpact || {};
-    const affectedRegions = Object.keys(regionImpact);
-    const regionNote = affectedRegions.length > 0
-        ? ` Affected regions: ${affectedRegions.join(', ')}.`
-        : '';
+    const regionNote = formatRegionImpactNote(info.regionImpact);
 
     let statusLabel;
     if (info.status === 'Maintenance') {
