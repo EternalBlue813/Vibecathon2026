@@ -263,6 +263,9 @@ function updateBadge(status) {
     } else if (status === 'Unknown') {
         badge.classList.add('unknown');
         badge.textContent = 'Unknown';
+    } else if (status === 'Warning') {
+        badge.classList.add('partial');
+        badge.textContent = 'Service Degradation';
     } else if (status === 'Maintenance') {
         badge.classList.add('maintenance');
         badge.textContent = 'Under Maintenance';
@@ -289,6 +292,16 @@ function formatRegionImpactNote(regionImpact) {
     if (keys.length === 0) return '';
     const labels = keys.map((code) => REGION_DISPLAY_LABELS[code] || code);
     return ` Affected regions: ${labels.join(', ')}.`;
+}
+
+function getPrimaryAwsLocationFromIncidents(incidents) {
+    for (const incident of (incidents || [])) {
+        if (incident?.awsLocation) return incident.awsLocation;
+        const name = incident?.name || '';
+        const match = name.match(/\(([^)]+)\)/);
+        if (match?.[1]) return match[1].trim();
+    }
+    return null;
 }
 
 function updateMaintenanceOverlay(status) {
@@ -318,15 +331,18 @@ function updateSummary(info) {
     });
 
     const regionNote = formatRegionImpactNote(info.regionImpact);
+    const awsLocation = entitySlug === 'aws' ? getPrimaryAwsLocationFromIncidents(incidents) : null;
 
     let statusLabel;
     if (info.status === 'Maintenance') {
         const sgt = info.maintenanceInfo?.detectedAt || new Date().toLocaleString('en-SG', { timeZone: 'Asia/Singapore' });
         statusLabel = `is currently under scheduled maintenance (as of ${sgt} SGT)`;
     } else if (info.status === 'Partial') {
-        statusLabel = 'is experiencing a partial outage — some services are affected';
+        statusLabel = awsLocation
+            ? `is experiencing a partial outage — ${awsLocation} AZ down`
+            : 'is experiencing a partial outage — some services are affected';
     } else if (info.status === 'Down') {
-        statusLabel = 'is currently down';
+        statusLabel = awsLocation ? `${awsLocation} Region Down` : 'is currently down';
     } else {
         statusLabel = 'is currently experiencing issues';
     }

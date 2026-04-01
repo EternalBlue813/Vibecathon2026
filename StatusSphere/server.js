@@ -422,6 +422,16 @@ const ALL_REGIONS = Object.keys(REGION_KEYWORDS);
 
 function classifyCloudStatus(incidents, regionImpact, healthScore) {
     if (incidents.length === 0) return 'Healthy';
+    const affectedAwsLocations = new Set(
+        incidents
+            .map((incident) => incident.awsLocation)
+            .filter(Boolean)
+    ).size;
+    if (affectedAwsLocations > 0) {
+        if (affectedAwsLocations >= Object.keys(AWS_REGION_MAP).length) return 'Down';
+        return 'Partial';
+    }
+
     const affectedRegions = Object.keys(regionImpact).length;
     const totalRegions = ALL_REGIONS.length;
     if (healthScore <= 0.3 || affectedRegions >= totalRegions - 1) return 'Down';
@@ -954,6 +964,19 @@ async function fetchEntityStatus(entity) {
         structuredResult
     });
     const llmResult = sanitizeBankLlmOutcome(type, structuredResult, signalText, llmRaw);
+    const normalizedSignal = stripMarkers(signalText).toLowerCase().replace(/\s+/g, ' ');
+    const keywordHit = extractIssueByKeywords(signalText);
+
+    if ((type === 'cdn' || type === 'cloud') && !structuredResult?.incidents?.length) {
+        if (hasOperationalDisclaimer(normalizedSignal)) {
+            console.log(`[StatusFetch] ${name}: operational disclaimer detected without active structured incidents — treating as Healthy`);
+            return { status: 'Healthy', healthScore: 1, incidents: [], regionImpact: {} };
+        }
+        if (llmResult?.hasIssue && !keywordHit) {
+            console.log(`[StatusFetch] ${name}: LLM-only issue without keyword evidence — treating as Healthy`);
+            return { status: 'Healthy', healthScore: 1, incidents: [], regionImpact: {} };
+        }
+    }
 
     if (!llmResult) {
         console.warn(`[StatusFetch] ${name}: LLM classification unavailable, using baseline and keyword fallback`);
@@ -962,7 +985,11 @@ async function fetchEntityStatus(entity) {
             const inc = structuredResult.incidents || [];
             const ri = computeRegionImpact(inc);
             if (inc.length === 0) {
-                const st = structuredResult.status || 'Healthy';
+                let st = structuredResult.status || 'Healthy';
+                // CDN status pages often expose noisy component metadata with no active incidents.
+                if (type === 'cdn' && ['Warning', 'Partial', 'Unknown'].includes(st)) {
+                    st = 'Healthy';
+                }
                 const hsDefault = st === 'Maintenance' ? 0.3 : st === 'Down' ? 0.15 : st === 'Warning' ? 0.85 : 1;
                 const hs = Number.isFinite(structuredResult.healthScore)
                     ? clamp01(structuredResult.healthScore)
@@ -998,22 +1025,31 @@ async function fetchEntityStatus(entity) {
             return response;
         }
 
-        const kw = extractIssueByKeywords(signalText);
+        const kw = keywordHit;
         if (kw && kw.type !== 'maintenance') {
+            // For CDN/edge pages with no structured incidents, keyword-only fallback is too noisy.
+            if (type === 'cdn') {
+                return { status: 'Healthy', healthScore: 1, incidents: [], regionImpact: {} };
+            }
+            if ((type === 'cdn' || type === 'cloud') && hasOperationalDisclaimer(normalizedSignal)) {
+                console.log(`[StatusFetch] ${name}: keyword outage ignored due to operational disclaimer`);
+                return { status: 'Healthy', healthScore: 1, incidents: [], regionImpact: {} };
+            }
             const cleanSummary = stripMarkers(kw.text);
             const issueType = kw.type;
             const mapped = mapIssueTypeToStatus(issueType);
             const healthScore = issueType === 'full' ? 0.15 : 0.5;
-            const region = getRegion(signalText);
+            const regionMeta = resolveCloudRegionMetadata(signalText);
             return {
                 status: mapped,
                 healthScore,
                 incidents: [{
                     name: cleanSummary,
                     link: statusUrl,
-                    region
+                    region: regionMeta.regionCode,
+                    awsLocation: regionMeta.location || undefined
                 }],
-                regionImpact: computeRegionImpact([{ region }])
+                regionImpact: computeRegionImpact([{ region: regionMeta.regionCode }])
             };
         }
 
@@ -1052,10 +1088,12 @@ async function fetchEntityStatus(entity) {
         : [];
 
     if (llmResult.hasIssue && incidents.length === 0) {
+        const regionMeta = resolveCloudRegionMetadata(signalText);
         incidents = [{
             name: issueType === 'maintenance' ? `Under Maintenance: ${issueName}` : issueName,
             link: statusUrl,
-            region: getRegion(signalText)
+            region: regionMeta.regionCode,
+            awsLocation: regionMeta.location || undefined
         }];
     }
 
@@ -1064,6 +1102,10 @@ async function fetchEntityStatus(entity) {
     }
 
     const regionImpact = computeRegionImpact(incidents);
+
+    if (type === 'cloud' && status !== 'Maintenance' && incidents.some((incident) => incident.awsLocation)) {
+        status = classifyCloudStatus(incidents, regionImpact, healthScore);
+    }
 
     const response = {
         status,
@@ -1195,6 +1237,13 @@ function hasBankOperationalDisclaimer(normalized) {
         || /\boperating\s+normally\b/i.test(normalized)
         || /\bno\s+(current\s+)?(service\s+)?issues?\s+reported\b/i.test(normalized)
         || /\b(no|zero)\s+.{0,20}\boutages?\b/i.test(normalized);
+}
+
+function hasOperationalDisclaimer(normalized) {
+    return hasBankOperationalDisclaimer(normalized)
+        || /\ball\s+services?\s+(operational|available|online)\b/i.test(normalized)
+        || /\bno\s+incidents?\s+reported\b/i.test(normalized)
+        || /\bno\s+known\s+issues?\b/i.test(normalized);
 }
 
 function extractIssueByKeywords(rawText) {
@@ -1769,7 +1818,13 @@ function buildFallbackHeadline() {
         if (info.status === 'Healthy') {
             healthy.push(name);
         } else if (info.status !== 'Unknown') {
-            issues.push(name);
+            const awsLocation = (info.incidents || []).find((incident) => incident.awsLocation)?.awsLocation;
+            if (name === 'Amazon Web Services' && awsLocation) {
+                const issueLabel = info.status === 'Partial' ? `${awsLocation} AZ Down` : `${awsLocation} Region Down`;
+                issues.push(`${name} (${issueLabel})`);
+            } else {
+                issues.push(name);
+            }
         }
     }
     if (issues.length === 0) {

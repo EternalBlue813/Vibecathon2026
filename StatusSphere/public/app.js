@@ -109,6 +109,26 @@ async function fetchData() {
     }
 }
 
+function getPrimaryAwsLocation(data) {
+    for (const incident of (data.incidents || [])) {
+        if (incident?.awsLocation) return incident.awsLocation;
+        const name = incident?.name || '';
+        const match = name.match(/\(([^)]+)\)/);
+        if (match?.[1]) return match[1].trim();
+    }
+    return null;
+}
+
+function getIssueSummary(slug, info) {
+    const name = entityConfig[slug]?.name || slug;
+    const awsLocation = slug === 'aws' ? getPrimaryAwsLocation(info) : null;
+    if (awsLocation) {
+        if (info.status === 'Partial') return `${name} (${awsLocation} AZ Down)`;
+        if (info.status === 'Down') return `${name} (${awsLocation} Region Down)`;
+    }
+    return name;
+}
+
 function updateTile(slug, data) {
     const tile = document.getElementById(`tile-${slug}`);
     if (!tile) return;
@@ -117,6 +137,7 @@ function updateTile(slug, data) {
 
     tile.classList.remove('up', 'down', 'partial', 'maintenance', 'unknown');
     const label = tile.querySelector('.tile-label');
+    const awsLocation = slug === 'aws' ? getPrimaryAwsLocation(data) : null;
 
     if (st === 'Unknown') {
         tile.classList.add('unknown');
@@ -124,15 +145,18 @@ function updateTile(slug, data) {
     } else if (st === 'Healthy') {
         tile.classList.add('up');
         if (label) label.textContent = 'Operational';
+    } else if (st === 'Warning') {
+        tile.classList.add('partial');
+        if (label) label.textContent = 'Service Degradation';
     } else if (st === 'Maintenance') {
         tile.classList.add('maintenance');
         if (label) label.textContent = 'Under Maintenance';
     } else if (st === 'Partial') {
         tile.classList.add('partial');
-        if (label) label.textContent = 'Partial Outage';
+        if (label) label.textContent = awsLocation ? `${awsLocation} AZ Down` : 'Partial Outage';
     } else {
         tile.classList.add('down');
-        if (label) label.textContent = 'Down';
+        if (label) label.textContent = awsLocation ? `${awsLocation} Region Down` : 'Down';
     }
 }
 
@@ -172,8 +196,7 @@ function updateOutageSummary(data) {
     const issues = [];
     for (const [slug, info] of Object.entries(data)) {
         if (info.status && info.status !== 'Healthy' && info.status !== 'Unknown') {
-            const name = entityConfig[slug]?.name || slug;
-            issues.push(name);
+            issues.push(getIssueSummary(slug, info));
         }
     }
 
