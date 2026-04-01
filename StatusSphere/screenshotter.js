@@ -4,22 +4,8 @@ const fs = require('fs');
 
 const MOBILE_VIEWPORT = { width: 375, height: 812, isMobile: true, hasTouch: true, deviceScaleFactor: 2 };
 const PAGE_TIMEOUT = 20000;
+const SETTLE_MS = 1500;
 const SCREENSHOT_INTERVAL = 60 * 1000;
-
-const SLUG_CAPTURE_OVERRIDES = {
-    citi: {
-        waitUntil: 'domcontentloaded',
-        navigationTimeoutMs: 45000,
-        settleMs: 4000,
-        fallbackUrl: 'https://www.citibank.com.sg/',
-    },
-    ocbc: {
-        waitUntil: 'domcontentloaded',
-        navigationTimeoutMs: 45000,
-        settleMs: 3500,
-        fallbackUrl: 'https://www.ocbc.com',
-    },
-};
 const MAX_SNAPSHOTS = 5;
 const BUCKET = 'entity-image-snapshot';
 
@@ -119,21 +105,17 @@ async function uploadToSupabase(slug, buffer, slotIndex) {
     return urlData?.publicUrl || null;
 }
 
-async function navigateForScreenshot(page, slug, primaryUrl) {
-    const override = SLUG_CAPTURE_OVERRIDES[slug] || {};
-    const waitUntil = override.waitUntil || 'networkidle2';
-    const navigationTimeoutMs = override.navigationTimeoutMs || PAGE_TIMEOUT;
-    const settleMs = override.settleMs ?? 1500;
+async function navigateForScreenshot(page, slug, primaryUrl, fallbackUrl) {
     const urls = [primaryUrl];
-    if (override.fallbackUrl && override.fallbackUrl !== primaryUrl) {
-        urls.push(override.fallbackUrl);
+    if (fallbackUrl && fallbackUrl !== primaryUrl) {
+        urls.push(fallbackUrl);
     }
 
     let lastError = null;
     for (const tryUrl of urls) {
         try {
-            await page.goto(tryUrl, { waitUntil, timeout: navigationTimeoutMs });
-            await new Promise(r => setTimeout(r, settleMs));
+            await page.goto(tryUrl, { waitUntil: 'networkidle2', timeout: PAGE_TIMEOUT });
+            await new Promise(r => setTimeout(r, SETTLE_MS));
             if (urls.length > 1 && tryUrl !== primaryUrl) {
                 console.log(`[Screenshot] ${slug}: captured using fallback URL`);
             }
@@ -146,8 +128,8 @@ async function navigateForScreenshot(page, slug, primaryUrl) {
     throw lastError || new Error('Navigation failed');
 }
 
-async function captureScreenshot(slug, url) {
-    if (!url) return null;
+async function captureScreenshot(slug, primaryUrl, fallbackUrl) {
+    if (!primaryUrl) return null;
 
     let page;
     try {
@@ -166,7 +148,7 @@ async function captureScreenshot(slug, url) {
             } catch { /* ignore */ }
         });
 
-        await navigateForScreenshot(page, slug, url);
+        await navigateForScreenshot(page, slug, primaryUrl, fallbackUrl);
 
         const buffer = await page.screenshot({ type: 'png', fullPage: false });
 
@@ -247,9 +229,10 @@ async function captureAll(entityConfig) {
     console.log(`[Screenshot] Starting capture cycle for ${slugs.length} entities...`);
     for (const slug of slugs) {
         const cfg = entityConfig[slug];
-        const url = cfg.statusUrl || cfg.url || null;
-        if (url) {
-            await captureScreenshot(slug, url);
+        const statusUrl = cfg.statusUrl || null;
+        const fallbackUrl = cfg.url || null;
+        if (statusUrl || fallbackUrl) {
+            await captureScreenshot(slug, statusUrl, fallbackUrl);
         }
     }
     console.log('[Screenshot] Capture cycle complete.');

@@ -86,10 +86,6 @@ function buildStatusSummaryUrl(baseUrl) {
     return `${trimmed}/api/v2/summary.json`;
 }
 
-async function scrapeEntityStatus(entity) {
-    return fetchEntityStatus(entity);
-}
-
 async function fetchAllStatus() {
     const entities = await loadEntitiesFromDb();
 
@@ -98,7 +94,7 @@ async function fetchAllStatus() {
     }
 
     const statusPromises = entities.map(async (entity) => {
-        const result = await scrapeEntityStatus(entity);
+        const result = await fetchEntityStatus(entity);
         return [entity.slug, result];
     });
 
@@ -377,9 +373,6 @@ function regionFromGeographicKeywords(text) {
     for (const [code, keywords] of Object.entries(REGION_KEYWORDS)) {
         for (const k of keywords) {
             if (regionKeywordMatches(lower, k)) {
-                // #region agent log
-                fetch('http://127.0.0.1:7416/ingest/980f5041-abbd-4975-ab8f-99ec432aab97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7422b5'},body:JSON.stringify({sessionId:'7422b5',runId:'pre-fix',hypothesisId:'H1',location:'server.js:regionFromGeographicKeywords',message:'Geographic keyword matched',data:{code,keyword:k,sample:lower.slice(0,220)},timestamp:Date.now()})}).catch(()=>{});
-                // #endregion
                 return code;
             }
         }
@@ -598,12 +591,6 @@ function normalizeIncident(incident, sourceUrl, pageUrl) {
     const name = regionMeta.location && !hasLocationInName
         ? `${baseName} (${regionMeta.location})`
         : baseName;
-
-    if (regionMeta.regionCode === 'NA') {
-        // #region agent log
-        fetch('http://127.0.0.1:7416/ingest/980f5041-abbd-4975-ab8f-99ec432aab97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7422b5'},body:JSON.stringify({sessionId:'7422b5',runId:'pre-fix',hypothesisId:'H2',location:'server.js:normalizeIncident',message:'Incident normalized to NA region',data:{sourceUrl,baseName,incidentRegion:incident?.region||null,availabilityZone:incident?.availabilityZone||null,textBlobSample:textBlob.slice(0,220)},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
-    }
 
     return {
         name,
@@ -941,12 +928,6 @@ async function fetchEntityStatus(entity) {
             return { status: 'Healthy', healthScore: 1, incidents: [], regionImpact: {} };
         }
         return unknownStatusResult();
-    }
-
-    if (slug === 'sxp') {
-        // #region agent log
-        fetch('http://127.0.0.1:7416/ingest/980f5041-abbd-4975-ab8f-99ec432aab97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7422b5'},body:JSON.stringify({sessionId:'7422b5',runId:'pre-fix',hypothesisId:'H4',location:'server.js:fetchEntityStatus',message:'SXP signal assembled',data:{hasStructured:!!structuredResult,structuredIncidentRegions:(structuredResult?.incidents||[]).map((i)=>i.region||null),signalRegion:getRegion(signalText),signalSample:signalText.slice(0,280)},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
     }
 
     const llmRaw = await detectIssueWithLLM(name, signalText, {
@@ -1555,12 +1536,7 @@ app.get('/status', async (req, res) => {
     await reloadEntities();
     await updateStatus();
     updateNews().catch(err => console.error('[StatusSphere] Background news update error:', err.message));
-    const payload = getCurrentStatusData();
-    const sxp = payload?.sxp || null;
-    // #region agent log
-    fetch('http://127.0.0.1:7416/ingest/980f5041-abbd-4975-ab8f-99ec432aab97',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7422b5'},body:JSON.stringify({sessionId:'7422b5',runId:'pre-fix',hypothesisId:'H5',location:'server.js:/status',message:'Status API payload snapshot',data:{hasSxp:!!sxp,sxpStatus:sxp?.status||null,sxpRegionImpact:sxp?.regionImpact||{},sxpIncidents:(sxp?.incidents||[]).map((i)=>({name:i.name,region:i.region||null,awsLocation:i.awsLocation||null}))},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
-    res.json(payload);
+    res.json(getCurrentStatusData());
 });
 
 app.post('/api/entities/reload', async (req, res) => {
@@ -1619,7 +1595,6 @@ app.get('/history', async (req, res) => {
         return res.status(503).json({ error: 'Database not configured' });
     }
 
-    const providers = ALL_SLUGS;
     const result = {};
 
     for (const slug of ALL_SLUGS) {
@@ -1654,39 +1629,6 @@ app.get('/news/:entity', async (req, res) => {
     const articles = normalizeNewsForProvider(entity, await fetchNews(query));
     await persistEntityNews(entity, articles);
     res.json(articles);
-});
-
-// --- Proxy for iframe (adds User-Agent to bypass bank anti-bot) ---
-app.get('/api/proxy', async (req, res) => {
-    const targetUrl = req.query.url;
-    if (!targetUrl) {
-        return res.status(400).json({ error: 'url parameter required' });
-    }
-    try {
-        const response = await axios.get(targetUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Cache-Control': 'no-cache',
-            },
-            timeout: 15000,
-            responseType: 'text',
-            maxRedirects: 5,
-        });
-        let html = response.data;
-        const csp = res.get('Content-Security-Policy');
-        if (csp) {
-            res.removeHeader('Content-Security-Policy');
-        }
-        res.set('Content-Type', 'text/html; charset=utf-8');
-        res.set('X-Frame-Options', 'ALLOW');
-        res.set('Access-Control-Allow-Origin', '*');
-        res.send(html);
-    } catch (err) {
-        console.error('[Proxy] Error:', err.message);
-        res.status(502).send(`Failed to fetch: ${err.message}`);
-    }
 });
 
 // --- Screenshot Endpoints ---

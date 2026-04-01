@@ -16,6 +16,13 @@ const GRID_MAP = {
     cdn:   'grid-cdn',
 };
 
+const STATUS_TILE_CONFIG = {
+    Unknown: { className: 'unknown', label: 'Unknown' },
+    Healthy: { className: 'up', label: 'Operational' },
+    Maintenance: { className: 'maintenance', label: 'Under Maintenance' },
+    Partial: { className: 'partial', label: 'Partial Outage' },
+};
+
 // --- Init ---
 document.addEventListener('DOMContentLoaded', async () => {
     await reloadEntitiesFromDb();
@@ -113,27 +120,12 @@ function updateTile(slug, data) {
     const tile = document.getElementById(`tile-${slug}`);
     if (!tile) return;
 
-    const st = data.status;
-
     tile.classList.remove('up', 'down', 'partial', 'maintenance', 'unknown');
     const label = tile.querySelector('.tile-label');
 
-    if (st === 'Unknown') {
-        tile.classList.add('unknown');
-        if (label) label.textContent = 'Unknown';
-    } else if (st === 'Healthy') {
-        tile.classList.add('up');
-        if (label) label.textContent = 'Operational';
-    } else if (st === 'Maintenance') {
-        tile.classList.add('maintenance');
-        if (label) label.textContent = 'Under Maintenance';
-    } else if (st === 'Partial') {
-        tile.classList.add('partial');
-        if (label) label.textContent = 'Partial Outage';
-    } else {
-        tile.classList.add('down');
-        if (label) label.textContent = 'Down';
-    }
+    const state = STATUS_TILE_CONFIG[data.status] || { className: 'down', label: 'Down' };
+    tile.classList.add(state.className);
+    if (label) label.textContent = state.label;
 }
 
 function updateGlobalStatus(data) {
@@ -208,12 +200,7 @@ function initAskBar() {
         chatHistory.push({ role: 'user', content: text });
 
         try {
-            const res = await fetch(CHAT_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messages: chatHistory.slice(-10) })
-            });
-            const data = await res.json();
+            const data = await requestChatReply();
 
             responseEl.textContent = data.reply;
             responseEl.classList.remove('loading');
@@ -286,12 +273,7 @@ function initChat() {
         typingEl.classList.add('typing');
 
         try {
-            const res = await fetch(CHAT_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messages: chatHistory.slice(-10) })
-            });
-            const data = await res.json();
+            const data = await requestChatReply();
 
             typingEl.querySelector('p').textContent = data.reply;
             typingEl.classList.remove('typing');
@@ -306,6 +288,15 @@ function initChat() {
             typingEl.classList.remove('typing');
         }
     });
+}
+
+async function requestChatReply() {
+    const res = await fetch(CHAT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: chatHistory.slice(-10) })
+    });
+    return res.json();
 }
 
 function appendMessage(role, text) {

@@ -357,29 +357,6 @@ h1 {
 .status-tile.maintenance .tile-label { color: #a855f7; }
 .status-tile.down .tile-label { color: var(--danger-color); }
 
-/* Controls */
-.controls-area {
-    background: var(--card-bg);
-    border-radius: 12px;
-    padding: 1.25rem;
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    margin-top: 1rem;
-}
-
-.controls-area h3 {
-    font-size: 0.8rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-secondary);
-    margin-bottom: 0.75rem;
-}
-
-.button-group {
-    display: flex;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-}
-
 button {
     background: rgba(255, 255, 255, 0.1);
     border: 1px solid rgba(255, 255, 255, 0.1);
@@ -404,12 +381,6 @@ button:active {
 button.secondary {
     background: transparent;
     border-color: rgba(255, 255, 255, 0.2);
-}
-
-button.danger-btn {
-    background: rgba(239, 68, 68, 0.15);
-    border-color: rgba(239, 68, 68, 0.3);
-    color: var(--danger-color);
 }
 
 button:disabled {
@@ -755,21 +726,6 @@ button:disabled {
 .news-source {
     color: var(--accent-color);
     font-weight: 500;
-}
-
-.feed-pill {
-    display: inline-flex;
-    align-items: center;
-    width: fit-content;
-    padding: 0.1rem 0.45rem;
-    border-radius: 999px;
-    font-size: 0.65rem;
-    font-weight: 700;
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
-    background: rgba(239, 68, 68, 0.16);
-    color: var(--danger-color);
-    border: 1px solid rgba(239, 68, 68, 0.22);
 }
 
 .no-news {

@@ -63,6 +63,7 @@ StatusSphere is a real-time infrastructure status monitoring dashboard that trac
 | `database/002-add-banks.sql` | Migration to allow bank slugs |
 | `database/003-entities.sql` | Creates `entities` table and seed entities |
 | `database/004-fix-provider-constraint.sql` | Drops legacy provider CHECK and enforces FK to `entities.slug` |
+| `database/005-allow-maintenance-partial-status.sql` | Expands `snapshots.status` CHECK to include `Maintenance` and `Partial` |
 
 ---
 
@@ -110,6 +111,7 @@ news_articles    -- Related news linked to snapshots
 - `002-add-banks.sql` — Extends provider CHECK to include bank slugs + 'Down' status
 - `003-entities.sql` — Creates `entities` table for dynamic scraping (replaces hardcoded config)
 - `004-fix-provider-constraint.sql` — Drops legacy provider CHECK and enforces `snapshots.provider -> entities.slug` foreign key
+- `005-allow-maintenance-partial-status.sql` — Updates `snapshots.status` CHECK to allow `Maintenance` and `Partial`
 
 ### Running Migrations
 
@@ -119,7 +121,7 @@ Run migrations via Supabase Dashboard SQL Editor or CLI:
 # Option 1: Supabase Dashboard
 # 1. Go to https://supabase.com/dashboard
 # 2. Select your project → SQL Editor
-# 3. Run SQL in order: 003-entities.sql, then 004-fix-provider-constraint.sql
+# 3. Run SQL in order: 003-entities.sql, 004-fix-provider-constraint.sql, then 005-allow-maintenance-partial-status.sql
 
 # Option 2: Supabase CLI
 supabase db push
@@ -265,13 +267,14 @@ Bank status detection works by:
 
 ## Last Updated
 
-Document version: 3.4
-Last updated: 2026-03-31
+Document version: 3.5
+Last updated: 2026-04-01
 
 ## Changelog
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 3.5 | 2026-04-01 | Cleaned stale code and assets: removed temporary debug telemetry hooks from `server.js`, removed unused `/api/proxy` route, simplified status/badge mapping logic in frontend scripts, deleted duplicate `005` migration and obsolete diagnostics/assets files |
 | 3.4 | 2026-03-31 | Bank `health_score` now LLM-driven from scraped status-page content, added `GET /api/entity/:entity` (URLs from `entities`, last fetch from `snapshots`), detail preview now uses `entities.status_page_url` |
 | 3.3 | 2026-03-31 | Dashboard/detail now force DB entity reload on page load, detail page shows main/status URLs + live website preview + last fetch timestamp, AI summary moved above chart |
 | 3.2 | 2026-03-31 | Removed all simulation flows, added live bank scraping from Supabase URLs, added `POST /api/entities/reload`, frontend now refreshes entity config on each fetch, documented SQL migration policy |

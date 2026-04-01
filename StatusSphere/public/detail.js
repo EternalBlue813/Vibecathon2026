@@ -8,6 +8,13 @@ const MAX_HISTORY = 20;
 const POLL_INTERVAL = 120000;
 const SCREENSHOT_POLL_INTERVAL = 15000;
 
+const BADGE_CONFIG = {
+    Healthy: { className: 'up', label: 'Operational' },
+    Unknown: { className: 'unknown', label: 'Unknown' },
+    Maintenance: { className: 'maintenance', label: 'Under Maintenance' },
+    Partial: { className: 'partial', label: 'Intermittent/Partial Outage' },
+};
+
 let chart = null;
 let entitySlug = null;
 let entityMeta = null;
@@ -257,22 +264,9 @@ function updateBadge(status) {
     const badge = document.getElementById('entity-badge');
     badge.classList.remove('up', 'down', 'partial', 'maintenance', 'unknown');
 
-    if (status === 'Healthy') {
-        badge.classList.add('up');
-        badge.textContent = 'Operational';
-    } else if (status === 'Unknown') {
-        badge.classList.add('unknown');
-        badge.textContent = 'Unknown';
-    } else if (status === 'Maintenance') {
-        badge.classList.add('maintenance');
-        badge.textContent = 'Under Maintenance';
-    } else if (status === 'Partial') {
-        badge.classList.add('partial');
-        badge.textContent = 'Intermittent/Partial Outage';
-    } else {
-        badge.classList.add('down');
-        badge.textContent = 'Down';
-    }
+    const state = BADGE_CONFIG[status] || { className: 'down', label: 'Down' };
+    badge.classList.add(state.className);
+    badge.textContent = state.label;
 }
 
 const REGION_DISPLAY_LABELS = {
