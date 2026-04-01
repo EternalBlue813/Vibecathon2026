@@ -547,7 +547,28 @@ async function fetchStatusPage(name, url) {
     }
 }
 
-const DISRUPTION_PHRASES = [
+const MAINTENANCE_PHRASES = [
+    'scheduled maintenance',
+    'scheduled downtime',
+    'under maintenance',
+    'planned maintenance',
+    'maintenance window',
+    'maintenance in progress',
+    'system maintenance',
+    'routine maintenance',
+    'maintenance period',
+    'undergoing maintenance',
+];
+
+const PARTIAL_OUTAGE_PHRASES = [
+    'fund transfer.*affected',
+    'fund transfer.*unavailable',
+    'fund transfer.*disrupted',
+    'payment.*affected',
+    'payment.*unavailable',
+    'payment.*disrupted',
+    'paynow.*affected',
+    'paynow.*unavailable',
     'services affected',
     'service affected',
     'services disrupted',
@@ -557,6 +578,22 @@ const DISRUPTION_PHRASES = [
     'experiencing issues',
     'experiencing difficulties',
     'currently experiencing',
+    'degraded service',
+    'degraded performance',
+    'intermittent',
+    'some services',
+    'partial outage',
+    'partially affected',
+    'login.*unavailable',
+    'banking.*unavailable',
+    'maintenance',
+    'we apologise',
+    'we apologize',
+    'working to resolve',
+    'technical difficulties',
+];
+
+const FULL_OUTAGE_PHRASES = [
     'system unavailable',
     'system is unavailable',
     'service unavailable',
@@ -570,41 +607,21 @@ const DISRUPTION_PHRASES = [
     'services down',
     'is down',
     'are down',
-    'outage',
     'major outage',
-    'degraded service',
-    'degraded performance',
-    'maintenance',
-    'disruption',
-    'intermittent',
+    'outage',
     'service interruption',
-    'scheduled downtime',
-    'technical difficulties',
-    'working to resolve',
-    'we apologise',
-    'we apologize',
-    'under maintenance',
-    'fund transfer.*affected',
-    'payment.*affected',
-    'login.*unavailable',
-    'banking.*unavailable',
+    'disruption',
 ];
+
+const DISRUPTION_PHRASES = [...PARTIAL_OUTAGE_PHRASES, ...FULL_OUTAGE_PHRASES];
 
 function stripMarkers(text) {
     if (!text) return text;
     return text.replace(/\[(TITLE|HEADING|BANNER|BODY)\]\s*/gi, '').trim();
 }
 
-function extractBankIssueByKeywords(rawText) {
-    if (!rawText) return null;
-
-    const normalized = rawText.toLowerCase().replace(/\s+/g, ' ');
-    const lines = rawText
-        .split(/[\n\r\.]+/)
-        .map((line) => line.replace(/\s+/g, ' ').trim())
-        .filter(Boolean);
-
-    for (const phrase of DISRUPTION_PHRASES) {
+function matchPhraseList(phraseList, normalized, lines) {
+    for (const phrase of phraseList) {
         if (phrase.includes('.*')) {
             const regex = new RegExp(phrase, 'i');
             if (regex.test(normalized)) {
@@ -616,6 +633,27 @@ function extractBankIssueByKeywords(rawText) {
             return (matchLine || phrase).slice(0, 220);
         }
     }
+    return null;
+}
+
+function extractBankIssueByKeywords(rawText) {
+    if (!rawText) return null;
+
+    const normalized = rawText.toLowerCase().replace(/\s+/g, ' ');
+    const lines = rawText
+        .split(/[\n\r\.]+/)
+        .map((line) => line.replace(/\s+/g, ' ').trim())
+        .filter(Boolean);
+
+    const maintHit = matchPhraseList(MAINTENANCE_PHRASES, normalized, lines);
+    if (maintHit) return { text: maintHit, type: 'maintenance' };
+
+    const fullHit = matchPhraseList(FULL_OUTAGE_PHRASES, normalized, lines);
+    if (fullHit) return { text: fullHit, type: 'full' };
+
+    const partialHit = matchPhraseList(PARTIAL_OUTAGE_PHRASES, normalized, lines);
+    if (partialHit) return { text: partialHit, type: 'partial' };
+
     return null;
 }
 
@@ -641,9 +679,11 @@ async function detectBankIssueWithLLM(bankName, signalText) {
 
     const keywordHit = extractBankIssueByKeywords(signalText);
     if (keywordHit) {
-        const cleanSummary = stripMarkers(keywordHit);
-        console.log(`[BankStatus] ${bankName}: keyword match detected — "${cleanSummary}"`);
-        return { hasIssue: true, summary: cleanSummary, severity: 0.5 };
+        const cleanSummary = stripMarkers(keywordHit.text);
+        const severityMap = { full: 0.9, partial: 0.5, maintenance: 0.3 };
+        const severity = severityMap[keywordHit.type] || 0.5;
+        console.log(`[BankStatus] ${bankName}: keyword match (${keywordHit.type}) — "${cleanSummary}"`);
+        return { hasIssue: true, summary: cleanSummary, severity, type: keywordHit.type };
     }
 
     if (!LLM_API_KEY) {
@@ -656,7 +696,7 @@ async function detectBankIssueWithLLM(bankName, signalText) {
         verdict = await callLLM([
             {
                 role: 'system',
-                content: 'You classify bank status-page content. Decide if there is an active service problem. Return ONLY JSON with keys: hasIssue (boolean), summary (string <= 180 chars), severity (number 0..1). hasIssue=true only for active incidents, maintenance, outages, disruptions, service degradation, or login/access problems. severity must be 0 when hasIssue=false. Do not infer from generic marketing text.'
+                content: 'You classify bank status-page content. Decide if there is an active service problem. Return ONLY JSON with keys: hasIssue (boolean), summary (string <= 180 chars), severity (number 0..1), type ("partial" | "full" | "maintenance" | "none"). hasIssue=true only for active incidents, maintenance, outages, disruptions, service degradation, or login/access problems. type="maintenance" when the page indicates scheduled maintenance, planned downtime, or system maintenance in progress. type="partial" when only SOME services are affected (e.g. fund transfers, payments, PayNow, specific channels). type="full" when the entire system or website is down/unreachable. severity: 0.2-0.4 for maintenance, 0.4-0.6 for partial, 0.8-1.0 for full outage, 0 when hasIssue=false. Do not infer from generic marketing text.'
             },
             {
                 role: 'user',
@@ -694,7 +734,7 @@ async function fetchBankStatus(entity) {
     const { slug, name, url, status_page_url } = entity;
     const statusUrl = status_page_url || url;
     if (!statusUrl) {
-        return { status: 'Warning', healthScore: 0.2, incidents: [{ name: 'Status page URL is missing', link: '#', region: 'AS' }], regionImpact: { AS: 1 } };
+        return { status: 'Down', healthScore: 0.2, incidents: [{ name: 'Status page URL is missing', link: '#', region: 'AS' }], regionImpact: { AS: 1 } };
     }
 
     let signalText = '';
@@ -727,7 +767,7 @@ async function fetchBankStatus(entity) {
             const code = error.response?.status;
             const details = code ? `HTTP ${code}` : error.message;
             return {
-                status: 'Warning',
+                status: 'Down',
                 healthScore: 0.15,
                 incidents: [{ name: `Status page unreachable (${details})`, link: statusUrl, region: 'AS' }],
                 regionImpact: { AS: 1 }
@@ -741,9 +781,24 @@ async function fetchBankStatus(entity) {
     }
 
     const issueName = llmResult.summary || 'Possible bank service issue detected from status page';
-    const healthScore = Math.max(0.05, 1 - llmResult.severity);
+    const issueType = llmResult.type || (llmResult.severity >= 0.7 ? 'full' : 'partial');
+
+    const sgtNow = new Date().toLocaleString('en-SG', { timeZone: 'Asia/Singapore' });
+
+    if (issueType === 'maintenance') {
+        return {
+            status: 'Maintenance',
+            healthScore: 0.3,
+            maintenanceInfo: { summary: issueName, detectedAt: sgtNow },
+            incidents: [{ name: `Under Maintenance: ${issueName}`, link: statusUrl, region: getRegion(signalText) || 'AS' }],
+            regionImpact: { AS: 1 }
+        };
+    }
+
+    const healthScore = issueType === 'full' ? Math.max(0.05, 1 - llmResult.severity) : 0.5;
+    const status = issueType === 'full' ? 'Down' : 'Partial';
     return {
-        status: 'Warning',
+        status,
         healthScore,
         incidents: [{ name: issueName, link: statusUrl, region: getRegion(signalText) || 'AS' }],
         regionImpact: { AS: 1 }

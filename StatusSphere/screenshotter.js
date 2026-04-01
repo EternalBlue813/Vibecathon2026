@@ -1,5 +1,6 @@
 const puppeteer = require('puppeteer');
 const { createClient } = require('@supabase/supabase-js');
+const fs = require('fs');
 
 const MOBILE_VIEWPORT = { width: 375, height: 812, isMobile: true, hasTouch: true, deviceScaleFactor: 2 };
 const PAGE_TIMEOUT = 20000;
@@ -17,19 +18,53 @@ const renderedPageText = {};
 
 let browser = null;
 
+const CHROME_PATHS = [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/chromium',
+];
+
+function findSystemChrome() {
+    for (const p of CHROME_PATHS) {
+        try { if (fs.existsSync(p)) return p; } catch {}
+    }
+    return null;
+}
+
 async function ensureBrowser() {
     if (browser && browser.connected) return browser;
-    browser = await puppeteer.launch({
-        headless: 'new',
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--single-process',
-        ],
-    });
-    return browser;
+
+    const launchArgs = [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+    ];
+
+    try {
+        browser = await puppeteer.launch({ headless: 'new', args: launchArgs });
+        console.log('[Screenshot] Launched Puppeteer bundled Chrome');
+        return browser;
+    } catch (e) {
+        console.warn('[Screenshot] Bundled Chrome unavailable, trying system Chrome...');
+    }
+
+    const systemChrome = findSystemChrome();
+    if (systemChrome) {
+        browser = await puppeteer.launch({
+            headless: 'new',
+            executablePath: systemChrome,
+            args: launchArgs,
+        });
+        console.log(`[Screenshot] Launched system Chrome: ${systemChrome}`);
+        return browser;
+    }
+
+    throw new Error('No Chrome/Chromium found. Install Google Chrome or run: npx puppeteer browsers install chrome');
 }
 
 function getSlotIndex(slug) {

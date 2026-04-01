@@ -113,26 +113,34 @@ function updateTile(slug, data) {
     const tile = document.getElementById(`tile-${slug}`);
     if (!tile) return;
 
-    const isHealthy = data.status === 'Healthy';
-    const isUnknown = data.status === 'Unknown';
+    const st = data.status;
 
-    tile.classList.remove('up', 'down', 'unknown');
+    tile.classList.remove('up', 'down', 'partial', 'maintenance', 'unknown');
     const label = tile.querySelector('.tile-label');
 
-    if (isUnknown) {
+    if (st === 'Unknown') {
         tile.classList.add('unknown');
         if (label) label.textContent = 'Unknown';
-    } else if (isHealthy) {
+    } else if (st === 'Healthy') {
         tile.classList.add('up');
         if (label) label.textContent = 'Operational';
+    } else if (st === 'Maintenance') {
+        tile.classList.add('maintenance');
+        if (label) label.textContent = 'Under Maintenance';
+    } else if (st === 'Partial') {
+        tile.classList.add('partial');
+        if (label) label.textContent = 'Partial Outage';
     } else {
         tile.classList.add('down');
-        if (label) label.textContent = 'Issues';
+        if (label) label.textContent = 'Down';
     }
 }
 
 function updateGlobalStatus(data) {
-    const allHealthy = Object.values(data).every(d => d.status === 'Healthy');
+    const statuses = Object.values(data).map(d => d.status);
+    const allHealthy = statuses.every(s => s === 'Healthy');
+    const hasDown = statuses.some(s => s === 'Down' || s === 'Warning');
+    const hasMaint = statuses.some(s => s === 'Maintenance');
     const globalStatus = document.getElementById('global-status');
     const indicator = document.querySelector('.live-indicator');
 
@@ -140,10 +148,18 @@ function updateGlobalStatus(data) {
         globalStatus.innerText = 'All Systems Operational';
         indicator.style.color = '#22c55e';
         indicator.style.background = 'rgba(34, 197, 94, 0.15)';
-    } else {
+    } else if (hasDown) {
         globalStatus.innerText = 'Service Disruptions Detected';
         indicator.style.color = '#ef4444';
         indicator.style.background = 'rgba(239, 68, 68, 0.15)';
+    } else if (hasMaint) {
+        globalStatus.innerText = 'Scheduled Maintenance in Progress';
+        indicator.style.color = '#a855f7';
+        indicator.style.background = 'rgba(168, 85, 247, 0.15)';
+    } else {
+        globalStatus.innerText = 'Partial Service Disruptions';
+        indicator.style.color = '#f59e0b';
+        indicator.style.background = 'rgba(245, 158, 11, 0.15)';
     }
 }
 

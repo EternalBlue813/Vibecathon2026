@@ -148,7 +148,7 @@ function initChart() {
                         label(ctx) {
                             const v = ctx.parsed.y;
                             if (v >= 0.9) return 'Healthy';
-                            if (v >= 0.3) return 'Intermittent';
+                            if (v >= 0.3) return 'Intermittent/Partial Outage';
                             return 'Down';
                         }
                     }
@@ -174,7 +174,7 @@ function initChart() {
                         stepSize: 0.5,
                         callback(value) {
                             if (value === 1) return 'Healthy';
-                            if (value === 0.5) return 'Intermittent';
+                            if (value === 0.5) return 'Partial Outage';
                             if (value === 0) return 'Down';
                             return '';
                         },
@@ -219,6 +219,7 @@ async function fetchStatus() {
         updateBadge(info.status);
         updateSummary(info);
         updateLastFetch(entityMeta?.lastFetch || null);
+        updateMaintenanceOverlay(info.status);
 
         const score = info.healthScore !== undefined ? info.healthScore : (info.status === 'Healthy' ? 1 : 0);
         chart.data.labels.push(formatTimestamp(new Date().toISOString()));
@@ -254,7 +255,7 @@ function colorChart() {
 
 function updateBadge(status) {
     const badge = document.getElementById('entity-badge');
-    badge.classList.remove('up', 'down', 'unknown');
+    badge.classList.remove('up', 'down', 'partial', 'maintenance', 'unknown');
 
     if (status === 'Healthy') {
         badge.classList.add('up');
@@ -262,9 +263,25 @@ function updateBadge(status) {
     } else if (status === 'Unknown') {
         badge.classList.add('unknown');
         badge.textContent = 'Unknown';
+    } else if (status === 'Maintenance') {
+        badge.classList.add('maintenance');
+        badge.textContent = 'Under Maintenance';
+    } else if (status === 'Partial') {
+        badge.classList.add('partial');
+        badge.textContent = 'Intermittent/Partial Outage';
     } else {
         badge.classList.add('down');
-        badge.textContent = 'Issues Detected';
+        badge.textContent = 'Down';
+    }
+}
+
+function updateMaintenanceOverlay(status) {
+    const wrapper = document.getElementById('chart-wrapper');
+    if (!wrapper) return;
+    if (status === 'Maintenance') {
+        wrapper.classList.add('maintenance-active');
+    } else {
+        wrapper.classList.remove('maintenance-active');
     }
 }
 
@@ -290,7 +307,18 @@ function updateSummary(info) {
         ? ` Affected regions: ${affectedRegions.join(', ')}.`
         : '';
 
-    el.textContent = `${name} is currently experiencing issues.${regionNote} Active incidents: ${lines.join('; ')}. Monitor this page for updates.`;
+    let statusLabel;
+    if (info.status === 'Maintenance') {
+        const sgt = info.maintenanceInfo?.detectedAt || new Date().toLocaleString('en-SG', { timeZone: 'Asia/Singapore' });
+        statusLabel = `is currently under scheduled maintenance (as of ${sgt} SGT)`;
+    } else if (info.status === 'Partial') {
+        statusLabel = 'is experiencing a partial outage — some services are affected';
+    } else if (info.status === 'Down') {
+        statusLabel = 'is currently down';
+    } else {
+        statusLabel = 'is currently experiencing issues';
+    }
+    el.textContent = `${name} ${statusLabel}.${regionNote} Active incidents: ${lines.join('; ')}. Monitor this page for updates.`;
 }
 
 async function fetchNews() {

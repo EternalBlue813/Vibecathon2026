@@ -39,8 +39,16 @@
 
         <section class="detail-section" aria-label="Uptime Chart">
             <h2>Uptime / Downtime History</h2>
-            <div class="chart-container">
-                <canvas id="history-chart"></canvas>
+            <div class="chart-wrapper" id="chart-wrapper">
+                <div class="chart-container">
+                    <canvas id="history-chart"></canvas>
+                </div>
+                <div class="maintenance-overlay" id="maintenance-overlay">
+                    <div class="maintenance-banner">
+                        <span class="maintenance-icon">&#9888;</span>
+                        <span>Under Maintenance</span>
+                    </div>
+                </div>
             </div>
         </section>
 
