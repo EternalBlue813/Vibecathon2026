@@ -11,15 +11,35 @@ const supabase = supabaseUrl && supabaseKey
     ? createClient(supabaseUrl, supabaseKey)
     : null;
 
+const SNAPSHOT_STATUS_MAP = {
+    Healthy: 'Healthy',
+    Warning: 'Warning',
+    Unknown: 'Unknown',
+    Down: 'Down',
+    Maintenance: 'Maintenance',
+    Partial: 'Partial',
+};
+
+function normalizeSnapshotStatus(status) {
+    if (typeof status !== 'string') return 'Unknown';
+    const trimmed = status.trim();
+    return SNAPSHOT_STATUS_MAP[trimmed] || 'Unknown';
+}
+
 async function storeSnapshot(provider, healthScore, status) {
     if (!supabase) return null;
+
+    const dbStatus = normalizeSnapshotStatus(status);
+    if (dbStatus !== status) {
+        console.log(`[Supabase] Normalized snapshot status for ${provider}: "${status}" -> "${dbStatus}"`);
+    }
 
     const { data, error } = await supabase
         .from('snapshots')
         .insert({
             provider,
             health_score: healthScore,
-            status,
+            status: dbStatus,
             polled_at: new Date().toISOString()
         })
         .select('id')
