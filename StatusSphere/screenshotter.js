@@ -5,8 +5,8 @@ const fs = require('fs');
 const MOBILE_VIEWPORT = { width: 375, height: 812, isMobile: true, hasTouch: true, deviceScaleFactor: 2 };
 const PAGE_TIMEOUT = 20000;
 const SETTLE_MS = 1500;
-const SCREENSHOT_INTERVAL = 60 * 1000;
-const MAX_SNAPSHOTS = 5;
+const SCREENSHOT_INTERVAL = parseInt(process.env.SCREENSHOT_INTERVAL) || 60 * 1000;
+const MAX_SNAPSHOTS = parseInt(process.env.SCREENSHOT_HISTORY_LIMIT) || 120;
 const BUCKET = 'entity-image-snapshot';
 
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -18,6 +18,7 @@ const screenshotHistory = {};
 const renderedPageText = {};
 
 let browser = null;
+let browserLaunchPromise = null;
 
 const CHROME_PATHS = [
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -38,6 +39,7 @@ function findSystemChrome() {
 
 async function ensureBrowser() {
     if (browser && browser.connected) return browser;
+    if (browserLaunchPromise) return browserLaunchPromise;
 
     const launchArgs = [
         '--no-sandbox',
@@ -47,50 +49,61 @@ async function ensureBrowser() {
         '--disable-blink-features=AutomationControlled',
     ];
 
+    browserLaunchPromise = (async () => {
+        try {
+            browser = await puppeteer.launch({ headless: 'new', args: launchArgs });
+            console.log('[Screenshot] Launched Puppeteer bundled Chrome');
+            return browser;
+        } catch (e) {
+            console.warn('[Screenshot] Bundled Chrome unavailable, trying system Chrome...');
+        }
+
+        const systemChrome = findSystemChrome();
+        if (systemChrome) {
+            browser = await puppeteer.launch({
+                headless: 'new',
+                executablePath: systemChrome,
+                args: launchArgs,
+            });
+            console.log(`[Screenshot] Launched system Chrome: ${systemChrome}`);
+            return browser;
+        }
+
+        throw new Error('No Chrome/Chromium found. Install Google Chrome or run: npx puppeteer browsers install chrome');
+    })();
+
     try {
-        browser = await puppeteer.launch({ headless: 'new', args: launchArgs });
-        console.log('[Screenshot] Launched Puppeteer bundled Chrome');
-        return browser;
-    } catch (e) {
-        console.warn('[Screenshot] Bundled Chrome unavailable, trying system Chrome...');
+        return await browserLaunchPromise;
+    } finally {
+        browserLaunchPromise = null;
     }
-
-    const systemChrome = findSystemChrome();
-    if (systemChrome) {
-        browser = await puppeteer.launch({
-            headless: 'new',
-            executablePath: systemChrome,
-            args: launchArgs,
-        });
-        console.log(`[Screenshot] Launched system Chrome: ${systemChrome}`);
-        return browser;
-    }
-
-    throw new Error('No Chrome/Chromium found. Install Google Chrome or run: npx puppeteer browsers install chrome');
 }
 
-function getSlotIndex(slug) {
+function ensureMeta(slug) {
     if (!screenshotMeta[slug]) {
-        screenshotMeta[slug] = { slot: 0, capturedAt: null, url: null };
+        screenshotMeta[slug] = { capturedAt: null, url: null };
     }
-    const nextSlot = (screenshotMeta[slug].slot % MAX_SNAPSHOTS) + 1;
-    screenshotMeta[slug].slot = nextSlot;
-    return nextSlot;
 }
 
-async function uploadToSupabase(slug, buffer, slotIndex) {
+function buildScreenshotPath(slug) {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const suffix = Math.random().toString(36).slice(2, 8);
+    return `${slug}/${ts}-${suffix}.png`;
+}
+
+async function uploadToSupabase(slug, buffer, objectPath) {
     if (!supabase) {
         console.warn('[Screenshot] Supabase not configured, skipping upload');
         return null;
     }
 
-    const filePath = `${slug}/${slotIndex}.png`;
+    const filePath = objectPath || buildScreenshotPath(slug);
 
     const { error } = await supabase.storage
         .from(BUCKET)
         .upload(filePath, buffer, {
             contentType: 'image/png',
-            upsert: true,
+            upsert: false,
         });
 
     if (error) {
@@ -191,8 +204,9 @@ async function captureScreenshot(slug, primaryUrl, fallbackUrl) {
             extractedAt: new Date().toISOString(),
         };
 
-        const slotIndex = getSlotIndex(slug);
-        const publicUrl = await uploadToSupabase(slug, buffer, slotIndex);
+        ensureMeta(slug);
+        const objectPath = buildScreenshotPath(slug);
+        const publicUrl = await uploadToSupabase(slug, buffer, objectPath);
 
         if (!publicUrl) return null;
 
@@ -203,14 +217,12 @@ async function captureScreenshot(slug, primaryUrl, fallbackUrl) {
         screenshotMeta[slug].url = urlWithBust;
 
         if (!screenshotHistory[slug]) screenshotHistory[slug] = [];
-        const existing = screenshotHistory[slug].findIndex(s => s.slot === slotIndex);
-        if (existing !== -1) screenshotHistory[slug].splice(existing, 1);
-        screenshotHistory[slug].push({ slot: slotIndex, capturedAt, url: urlWithBust });
+        screenshotHistory[slug].push({ path: objectPath, capturedAt, url: urlWithBust });
         if (screenshotHistory[slug].length > MAX_SNAPSHOTS) {
             screenshotHistory[slug].shift();
         }
 
-        console.log(`[Screenshot] ${slug}: slot ${slotIndex}/${MAX_SNAPSHOTS} uploaded at ${capturedAt}`);
+        console.log(`[Screenshot] ${slug}: uploaded ${objectPath} at ${capturedAt}`);
         return { capturedAt, url: urlWithBust };
     } catch (err) {
         console.error(`[Screenshot] ${slug}: failed -`, err.message);
@@ -269,17 +281,13 @@ let intervalHandle = null;
 function startScheduler(getEntityConfig) {
     if (intervalHandle) return;
 
-    captureAll(getEntityConfig()).catch(err =>
-        console.error('[Screenshot] Initial capture error:', err.message)
-    );
-
     intervalHandle = setInterval(() => {
         captureAll(getEntityConfig()).catch(err =>
             console.error('[Screenshot] Scheduled capture error:', err.message)
         );
     }, SCREENSHOT_INTERVAL);
 
-    console.log(`[Screenshot] Scheduler started (every ${SCREENSHOT_INTERVAL / 1000}s, ${MAX_SNAPSHOTS} slots per entity, bucket: ${BUCKET})`);
+    console.log(`[Screenshot] Scheduler started (every ${SCREENSHOT_INTERVAL / 1000}s, keep ${MAX_SNAPSHOTS} in-memory entries, bucket: ${BUCKET})`);
 }
 
 async function shutdown() {

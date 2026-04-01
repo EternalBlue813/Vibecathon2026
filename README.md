@@ -1,99 +1,111 @@
 # StatusSphere
 
-Real-time infrastructure status monitoring dashboard. StatusSphere tracks the health of **cloud providers** (AWS, Azure, GCP), **CDNs** (Cloudflare, Akamai, Fastly), and **banks** (DBS, OCBC, UOB, Citi, SCB, HSBC, Maybank, SXP) by polling their status pages, classifying issues with an LLM, and surfacing everything in a live dashboard with AI-powered headlines and chat.
+Real-time infrastructure status monitoring dashboard. StatusSphere tracks database-driven entities across cloud providers, CDNs, and banks by polling status pages/APIs, classifying issues with an LLM, and surfacing results in a live dashboard.
 
 ## What It Does
 
-- **Status Monitoring** — Polls provider status pages every 2 minutes, classifies health as Healthy / Warning / Down / Partial / Maintenance
-- **Live Screenshots** — Captures mobile screenshots of every provider's status page every 60 seconds (stored in Supabase Storage)
-- **News Aggregation** — Pulls relevant outage news from Google News RSS every 30 minutes
-- **AI Headlines** — Generates a breaking-news-style headline summarising the current global state
-- **AI Chat** — Ask questions about current or recent outages via a chat interface (guarded to infrastructure topics)
-- **Auto Cleanup** — pg_cron deletes data older than 1 day daily at 3 AM
+- Status monitoring with normalized states: `Healthy`, `Warning`, `Partial`, `Down`, `Maintenance`, `Unknown`
+- Live screenshot capture to Supabase Storage (`entity-image-snapshot`)
+- News aggregation from Google News RSS
+- LLM-generated headlines and guarded infrastructure chat
+- DB-first cold-start behavior for config/status/headline endpoints
+- Detail-page fallback to last 5 snapshots/screenshots when memory cache is empty
+- AWS uses its public health data feeds for more accurate current status instead of relying on the page shell alone
+- Entity source strategy is DB-driven, so non-AWS entities remain on the normal generic status-page path by default
 
-For a detailed data flow and trigger breakdown see [StatusSphere/flowchart.md](StatusSphere/flowchart.md).
-For the full database schema see [StatusSphere/database/database.md](StatusSphere/database/database.md).
-
----
+See:
+- `StatusSphere/flowchart.md` for trigger/data flow
+- `StatusSphere/database/database.md` for schema details
+- `StatusSphere/instruction.md` for technical behavior and maintenance policy
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org/) **v18+**
-- A [Supabase](https://supabase.com/) account (free tier works)
+- Node.js v18+
+- Supabase project (database + storage)
 
 ## Setup
 
-### 1. Clone & Install
+### 1) Install
 
 ```bash
 cd StatusSphere
 npm install
 ```
 
-### 2. Create the Supabase Database
+### 2) Run Migrations (in order)
 
-1. Go to [Supabase Dashboard](https://supabase.com/dashboard) and create a new project.
-2. Open **SQL Editor** in your project.
-3. Run the following SQL files **in order** — copy each file's contents into the editor and click **Run**:
+| Order | File |
+|---|---|
+| 1 | `database/001-initial.sql` |
+| 2 | `database/002-add-banks.sql` |
+| 3 | `database/003-entities.sql` |
+| 4 | `database/004-fix-provider-constraint.sql` |
+| 5 | `database/005-allow-maintenance-partial-status.sql` |
+| 6 | `database/006-add-snapshot-analysis-columns.sql` |
+| 7 | `database/007-news-dedupe-per-entity.sql` |
+| 8 | `database/008-retention-12h-and-storage-cleanup.sql` |
+| 9 | `database/009-entity-status-source-config.sql` |
 
-| Order | File | What it does |
-|-------|------|--------------|
-| 1 | `database/001-initial.sql` | Creates `snapshots`, `incidents`, `news_articles` tables and pg_cron cleanup jobs |
-| 2 | `database/002-add-banks.sql` | Extends provider list to include banks |
-| 3 | `database/003-entities.sql` | Creates the `entities` master table and seeds 14 providers |
-| 4 | `database/004-fix-provider-constraint.sql` | Fixes FK constraint (idempotent) |
-| 5 | `database/005-allow-maintenance-partial-status.sql` | Adds `Maintenance` and `Partial` statuses |
-
-> **Tip:** You can run them one after another in a single SQL Editor session.
-
-### 3. Create the Environment File
+### 3) Configure Environment
 
 ```bash
 cp .env.example .env
 ```
 
-Copy the example file and fill in your values:
+Core values from `.env.example`:
 
 ```env
-# Supabase
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
-
-# Server
 PORT=3000
 
-# LLM (Groq shown by default — works with any OpenAI-compatible API)
+CACHE_DURATION=120000
+NEWS_FETCH_INTERVAL=1800000
+HEADLINE_CACHE_DURATION=120000
+SCREENSHOT_INTERVAL=60000
+ENTITY_REFRESH_INTERVAL=1800000
+
+FRONTEND_STATUS_POLL_INTERVAL=120000
+FRONTEND_HEADLINE_POLL_INTERVAL=120000
+FRONTEND_SCREENSHOT_POLL_INTERVAL=15000
+
 LLM_API_KEY=your-llm-api-key-here
 LLM_MODEL=google/gemini-2.0-flash-001
 LLM_BASE_URL=https://api.groq.com/openai/v1
 ```
 
-- **SUPABASE_URL** and **SUPABASE_SERVICE_ROLE_KEY** — found in Supabase under **Settings → API → Project API keys** (use the `service_role` key, not the anon key).
-- **LLM_API_KEY** — used for status classification, headline generation, and chat. Works with [Groq](https://groq.com/), [OpenRouter](https://openrouter.ai/), Ollama, or any OpenAI-compatible endpoint.
+Notes:
+- `SUPABASE_SECRET_KEY` is also supported as a backward-compatible alias.
+- `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` are supported legacy aliases.
+- `STATUS_POLL_INTERVAL` is optional; if unset, server scheduler uses `CACHE_DURATION`.
+- After migration `009`, only `aws` changes behavior automatically; other entities continue to work as before.
 
-### 4. Start the App
+### 4) Start
 
 ```bash
 npm start
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+Open `http://localhost:3000`.
 
----
+## Key API Endpoints
 
-## Project Structure
+- `GET /api/config`
+- `GET /api/config/intervals`
+- `GET /status`
+- `POST /api/entities/reload`
+- `GET /api/entity/:entity`
+- `GET /history?entity=<slug>&limit=<n>`
+- `GET /news/:entity`
+- `GET /api/screenshot/:entity/history`
+- `GET /api/headline`
+- `POST /api/chat`
 
-```
-StatusSphere/
-├── server.js              # Express server, routes, triggers
-├── database/              # SQL migrations (run in order)
-│   ├── 001-initial.sql
-│   ├── 002-add-banks.sql
-│   ├── 003-entities.sql
-│   ├── 004-fix-provider-constraint.sql
-│   ├── 005-allow-maintenance-partial-status.sql
-│   └── database.md        # Full schema documentation
-├── flowchart.md           # Data flow & trigger architecture
-├── .env.example           # Template for environment variables
-└── package.json
-```
+## Documentation Rule
+
+When backend behavior, env vars, database schema, or API flow changes, update these files together:
+
+- `StatusSphere/instruction.md`
+- `StatusSphere/flowchart.md`
+- `StatusSphere/database/database.md`
+- `README.md`

@@ -1,12 +1,14 @@
 const CONFIG_URL = '/api/config';
-const RELOAD_ENTITIES_URL = '/api/entities/reload';
-const ENTITY_META_URL = '/api/entity/';
+const INTERVALS_URL = '/api/config/intervals';
 const STATUS_URL = '/status';
 const HISTORY_URL = '/history';
 const SCREENSHOT_URL = '/api/screenshot/';
 const MAX_HISTORY = 20;
-const POLL_INTERVAL = 120000;
-const SCREENSHOT_POLL_INTERVAL = 15000;
+const INITIAL_HISTORY_LIMIT = 5;
+const ENTITY_CONFIG_CACHE_KEY = 'statussphere:entity-config:v1';
+const ENTITY_CONFIG_CACHE_TTL = 10 * 60 * 1000;
+let POLL_INTERVAL = 120000;
+let SCREENSHOT_POLL_INTERVAL = 15000;
 
 const BADGE_CONFIG = {
     Healthy: { className: 'up', label: 'Operational' },
@@ -18,12 +20,33 @@ const BADGE_CONFIG = {
 let chart = null;
 let entitySlug = null;
 let entityMeta = null;
+let lastConfigFetch = 0;
+let recentSnapshots = [];
 
-async function reloadEntitiesFromDb() {
+function readEntityConfigCache() {
     try {
-        await fetch(RELOAD_ENTITIES_URL, { method: 'POST' });
+        const raw = localStorage.getItem(ENTITY_CONFIG_CACHE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return null;
+        if (!parsed.expiresAt || Date.now() > parsed.expiresAt) {
+            localStorage.removeItem(ENTITY_CONFIG_CACHE_KEY);
+            return null;
+        }
+        return parsed.data || null;
     } catch (e) {
-        console.error('Failed to reload entities:', e);
+        return null;
+    }
+}
+
+function writeEntityConfigCache(config) {
+    try {
+        localStorage.setItem(ENTITY_CONFIG_CACHE_KEY, JSON.stringify({
+            expiresAt: Date.now() + ENTITY_CONFIG_CACHE_TTL,
+            data: config
+        }));
+    } catch (e) {
+        // ignore quota/storage errors
     }
 }
 
@@ -49,29 +72,44 @@ function applyEntityMetaToPage() {
     updateLastFetch(entityMeta?.lastFetch || null);
 }
 
-async function refreshEntityDetailsFromDb() {
-    try {
-        const res = await fetch(`${ENTITY_META_URL}${encodeURIComponent(entitySlug)}`);
-        if (!res.ok) {
-            return;
-        }
-        entityMeta = await res.json();
-        applyEntityMetaToPage();
-    } catch (e) {
-        console.error('Failed to load entity details:', e);
-    }
-}
-
 async function refreshEntityMeta() {
+    const now = Date.now();
+    const canUseMemory = entityMeta && now - lastConfigFetch < ENTITY_CONFIG_CACHE_TTL;
+    if (canUseMemory) {
+        applyEntityMetaToPage();
+        return;
+    }
+
+    const cached = readEntityConfigCache();
+    if (cached && cached[entitySlug]) {
+        entityMeta = cached[entitySlug];
+        lastConfigFetch = now;
+        applyEntityMetaToPage();
+        return;
+    }
+
     try {
         const cfgRes = await fetch(CONFIG_URL);
         const config = await cfgRes.json();
+        writeEntityConfigCache(config);
         entityMeta = config[entitySlug] || null;
+        lastConfigFetch = now;
     } catch (e) {
         console.error('Failed to load config', e);
     }
 
     applyEntityMetaToPage();
+}
+
+async function loadIntervals() {
+    try {
+        const res = await fetch(INTERVALS_URL);
+        const intervals = await res.json();
+        POLL_INTERVAL = intervals.statusPollInterval;
+        SCREENSHOT_POLL_INTERVAL = intervals.screenshotPollInterval;
+    } catch (e) {
+        console.error('Failed to load intervals:', e);
+    }
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -83,9 +121,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
-    await reloadEntitiesFromDb();
+    await loadIntervals();
     await refreshEntityMeta();
-    await refreshEntityDetailsFromDb();
 
     initChart();
     initCarousel();
@@ -197,16 +234,24 @@ function initChart() {
 
 async function loadHistory() {
     try {
-        const res = await fetch(HISTORY_URL);
+        const res = await fetch(`${HISTORY_URL}?entity=${encodeURIComponent(entitySlug)}&limit=${INITIAL_HISTORY_LIMIT}`);
         if (!res.ok) return;
         const data = await res.json();
 
-        const snapshots = data[entitySlug];
+        const snapshots = Array.isArray(data[entitySlug]) ? data[entitySlug] : [];
         if (snapshots && snapshots.length > 0) {
+            recentSnapshots = snapshots;
             chart.data.labels = snapshots.map(s => formatTimestamp(s.polled_at));
             chart.data.datasets[0].data = snapshots.map(s => s.health_score);
             colorChart();
             chart.update();
+
+            hydrateScreenshotFallbackFromSnapshots(snapshots);
+
+            const latest = snapshots[snapshots.length - 1];
+            if (latest) {
+                applySnapshotFallback(latest);
+            }
         }
     } catch (e) {
         console.error('Failed to load history:', e);
@@ -215,17 +260,23 @@ async function loadHistory() {
 
 async function fetchStatus() {
     try {
-        await refreshEntityMeta();
+        if (Date.now() - lastConfigFetch >= ENTITY_CONFIG_CACHE_TTL) {
+            await refreshEntityMeta();
+        }
         const res = await fetch(STATUS_URL);
         const data = await res.json();
         const info = data[entitySlug];
-        if (!info) return;
-
-        await refreshEntityDetailsFromDb();
+        if (!info) {
+            const latest = recentSnapshots[recentSnapshots.length - 1];
+            if (latest) {
+                applySnapshotFallback(latest);
+            }
+            return;
+        }
 
         updateBadge(info.status);
         updateSummary(info);
-        updateLastFetch(entityMeta?.lastFetch || null);
+        updateLastFetch(info.fetchedAt || null);
         updateMaintenanceOverlay(info.status);
 
         const score = info.healthScore !== undefined ? info.healthScore : (info.status === 'Healthy' ? 1 : 0);
@@ -238,8 +289,59 @@ async function fetchStatus() {
         colorChart();
         chart.update();
     } catch (e) {
+        const latest = recentSnapshots[recentSnapshots.length - 1];
+        if (latest) {
+            applySnapshotFallback(latest);
+        }
         console.error('Failed to fetch status:', e);
     }
+}
+
+function applySnapshotFallback(snapshot) {
+    if (!snapshot) return;
+
+    updateBadge(snapshot.status || 'Unknown');
+    updateLastFetch(snapshot.polled_at || null);
+    updateMaintenanceOverlay(snapshot.status || 'Unknown');
+
+    const el = document.getElementById('llm-summary');
+    const name = entityMeta?.name || entitySlug;
+    if (!el) return;
+
+    if (snapshot.llm_summary) {
+        el.textContent = snapshot.llm_summary;
+        return;
+    }
+
+    if (snapshot.status === 'Healthy') {
+        el.textContent = `No active incidents reported for ${name}. The service appears to be operating normally.`;
+    } else if (snapshot.status === 'Maintenance') {
+        el.textContent = `${name} is under maintenance based on the most recent stored snapshot.`;
+    } else if (snapshot.status === 'Partial') {
+        el.textContent = `${name} is experiencing a partial outage based on the most recent stored snapshot.`;
+    } else if (snapshot.status === 'Down') {
+        el.textContent = `${name} is experiencing a major service disruption based on the most recent stored snapshot.`;
+    } else {
+        el.textContent = `Latest stored status for ${name} is ${snapshot.status || 'Unknown'}.`;
+    }
+}
+
+function hydrateScreenshotFallbackFromSnapshots(snapshots) {
+    if (screenshotSnapshots.length > 0 || !Array.isArray(snapshots) || snapshots.length === 0) {
+        return;
+    }
+
+    const derived = snapshots
+        .filter((snapshot) => snapshot.analysis_screenshot_url)
+        .map((snapshot) => ({
+            url: snapshot.analysis_screenshot_url,
+            capturedAt: snapshot.analysis_screenshot_captured_at,
+        }));
+
+    if (derived.length === 0) return;
+
+    screenshotSnapshots = derived;
+    screenshotIndex = screenshotSnapshots.length - 1;
 }
 
 function updateLastFetch(fetchedAt) {

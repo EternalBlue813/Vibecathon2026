@@ -20,6 +20,7 @@ let BANK_SLUGS = [];
 let CLOUD_SLUGS = [];
 let CDN_SLUGS = [];
 let ENTITY_REVISION = '';
+let lastEntitiesRefreshAt = 0;
 
 function setEntities(entities) {
     const orderedEntities = [...entities].sort((a, b) => a.slug.localeCompare(b.slug));
@@ -33,7 +34,9 @@ function setEntities(entities) {
             name: e.name,
             category: e.type,
             url: e.url || null,
-            statusUrl: e.status_page_url || null
+            statusUrl: e.status_page_url || null,
+            statusSourceKind: e.status_source_kind || 'generic_status_page',
+            statusSourceConfig: e.status_source_config || {}
         };
         if (e.type === 'bank') bank.push(e.slug);
         if (e.type === 'cloud') cloud.push(e.slug);
@@ -46,7 +49,7 @@ function setEntities(entities) {
     CLOUD_SLUGS = cloud;
     CDN_SLUGS = cdn;
     ENTITY_REVISION = orderedEntities
-        .map((e) => `${e.slug}:${e.name}:${e.type}:${e.url || ''}:${e.status_page_url || ''}`)
+        .map((e) => `${e.slug}:${e.name}:${e.type}:${e.url || ''}:${e.status_page_url || ''}:${e.status_source_kind || 'generic_status_page'}:${JSON.stringify(e.status_source_config || {})}`)
         .join('|');
 }
 
@@ -59,7 +62,7 @@ async function loadEntitiesFromDb() {
     try {
         const { data, error } = await supabase
             .from('entities')
-            .select('slug, name, type, url, status_page_url, is_active')
+            .select('slug, name, type, url, status_page_url, status_source_kind, status_source_config, is_active')
             .eq('is_active', true);
 
         if (error) throw error;
@@ -84,22 +87,6 @@ function buildStatusSummaryUrl(baseUrl) {
     const trimmed = baseUrl.replace(/\/$/, '');
     if (trimmed.endsWith('/api/v2/summary.json')) return trimmed;
     return `${trimmed}/api/v2/summary.json`;
-}
-
-async function fetchAllStatus() {
-    const entities = await loadEntitiesFromDb();
-
-    if (!entities || entities.length === 0) {
-        return {};
-    }
-
-    const statusPromises = entities.map(async (entity) => {
-        const result = await fetchEntityStatus(entity);
-        return [entity.slug, result];
-    });
-
-    const results = await Promise.all(statusPromises);
-    return Object.fromEntries(results);
 }
 
 function defaultEntry() {
@@ -137,9 +124,34 @@ async function reloadEntities() {
     return entities;
 }
 
+function getCachedEntitiesList() {
+    return Object.keys(ENTITY_CONFIG).map((slug) => ({
+        slug,
+        name: ENTITY_CONFIG[slug].name,
+        type: ENTITY_CONFIG[slug].category,
+        url: ENTITY_CONFIG[slug].url,
+        status_page_url: ENTITY_CONFIG[slug].statusUrl,
+        status_source_kind: ENTITY_CONFIG[slug].statusSourceKind,
+        status_source_config: ENTITY_CONFIG[slug].statusSourceConfig,
+    }));
+}
+
+async function refreshEntitiesIfStale(force = false) {
+    const now = Date.now();
+    if (!force && lastEntitiesRefreshAt && now - lastEntitiesRefreshAt < ENTITY_REFRESH_INTERVAL) {
+        return getCachedEntitiesList();
+    }
+
+    const entities = await reloadEntities();
+    lastEntitiesRefreshAt = now;
+    return entities;
+}
+
 const CACHE_DURATION = parseInt(process.env.CACHE_DURATION) || 120 * 1000;
 const NEWS_FETCH_INTERVAL = parseInt(process.env.NEWS_FETCH_INTERVAL) || 30 * 60 * 1000;
 const HEADLINE_CACHE_DURATION = parseInt(process.env.HEADLINE_CACHE_DURATION) || 120 * 1000;
+const STATUS_POLL_INTERVAL = parseInt(process.env.STATUS_POLL_INTERVAL) || CACHE_DURATION;
+const ENTITY_REFRESH_INTERVAL = parseInt(process.env.ENTITY_REFRESH_INTERVAL) || 30 * 60 * 1000;
 let headlineCache = { text: '', timestamp: 0 };
 let lastNewsFetch = 0;
 
@@ -229,6 +241,125 @@ Reply with ONLY "yes" or "no".`
 
 function getCurrentStatusData() {
     return JSON.parse(JSON.stringify(cache.data));
+}
+
+async function loadLatestSnapshotFromDbForSlug(slug) {
+    if (!supabase) return null;
+
+    const { data: snapshot, error } = await supabase
+        .from('snapshots')
+        .select('id, polled_at, health_score, status')
+        .eq('provider', slug)
+        .order('polled_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+    if (error || !snapshot) {
+        return null;
+    }
+
+    const { data: incidents } = await supabase
+        .from('incidents')
+        .select('name, link, region')
+        .eq('snapshot_id', snapshot.id)
+        .order('detected_at', { ascending: false });
+
+    const { data: newsArticles } = await supabase
+        .from('news_articles')
+        .select('title, link, source, published_at')
+        .eq('provider', slug)
+        .order('fetched_at', { ascending: false })
+        .limit(3);
+
+    return {
+        status: snapshot.status || 'Unknown',
+        healthScore: Number.isFinite(snapshot.health_score) ? snapshot.health_score : 0,
+        incidents: (incidents || []).map((incident) => ({
+            name: incident.name,
+            link: incident.link,
+            region: incident.region
+        })),
+        news: (newsArticles || []).map((article) => ({
+            title: article.title,
+            link: article.link,
+            source: article.source || 'News',
+            pubDate: article.published_at
+        })),
+        regionImpact: computeRegionImpact(incidents || []),
+        fetchedAt: snapshot.polled_at
+    };
+}
+
+async function getRecentNewsFromDb(provider, limit = 3) {
+    if (!supabase) return [];
+
+    const { data, error } = await supabase
+        .from('news_articles')
+        .select('title, link, source, published_at')
+        .eq('provider', provider)
+        .order('fetched_at', { ascending: false })
+        .limit(limit);
+
+    if (error || !Array.isArray(data)) {
+        return [];
+    }
+
+    return data.map((article) => ({
+        title: article.title,
+        link: article.link,
+        source: article.source || 'News',
+        pubDate: article.published_at,
+    }));
+}
+
+async function hydrateCacheFromDatabase() {
+    initializeCache();
+    if (!supabase || ALL_SLUGS.length === 0) {
+        return;
+    }
+
+    for (const slug of ALL_SLUGS) {
+        const latest = await loadLatestSnapshotFromDbForSlug(slug);
+        if (latest) {
+            cache.data[slug] = latest;
+        }
+    }
+}
+
+async function ensureEntitiesLoaded() {
+    if (ALL_SLUGS.length > 0 && Object.keys(ENTITY_CONFIG).length > 0) {
+        return getCachedEntitiesList();
+    }
+
+    return refreshEntitiesIfStale(true);
+}
+
+function isDefaultCacheEntry(entry) {
+    if (!entry) return true;
+    return entry.status === 'Unknown'
+        && entry.healthScore === 1
+        && (!Array.isArray(entry.incidents) || entry.incidents.length === 0)
+        && (!Array.isArray(entry.news) || entry.news.length === 0)
+        && (!entry.regionImpact || Object.keys(entry.regionImpact).length === 0)
+        && !entry.fetchedAt;
+}
+
+async function ensureStatusDataReady() {
+    await ensureEntitiesLoaded();
+    synchronizeCacheEntries();
+
+    if (!supabase || ALL_SLUGS.length === 0) {
+        return cache.data;
+    }
+
+    const missingEntries = Object.keys(cache.data).length !== ALL_SLUGS.length;
+    const needsHydration = missingEntries || ALL_SLUGS.some((slug) => isDefaultCacheEntry(cache.data[slug]));
+    if (needsHydration) {
+        await hydrateCacheFromDatabase();
+        synchronizeCacheEntries();
+    }
+
+    return cache.data;
 }
 
 function buildStatusContext() {
@@ -413,8 +544,27 @@ const STATUS_SIGNAL_SELECTORS = [
 
 const ALL_REGIONS = Object.keys(REGION_KEYWORDS);
 
-function classifyCloudStatus(incidents, regionImpact, healthScore) {
+function classifyScopedIncidentStatus(incidents, regionImpact, healthScore, componentSummary = null) {
     if (incidents.length === 0) return 'Healthy';
+
+    const affectedScopedLocations = new Set(
+        incidents
+            .map((incident) => incident.awsLocation || incident.region)
+            .filter(Boolean)
+    ).size;
+
+    if (componentSummary?.total > 0) {
+        const nonOperationalRatio = componentSummary.nonOperational / componentSummary.total;
+        if (nonOperationalRatio >= 0.85 || healthScore <= 0.15) return 'Down';
+        if (affectedScopedLocations > 0 || nonOperationalRatio > 0) return 'Partial';
+    }
+
+    if (affectedScopedLocations > 0) {
+        const affectedRegions = Object.keys(regionImpact).length;
+        if (healthScore <= 0.1 && affectedRegions >= Math.max(2, ALL_REGIONS.length - 1)) return 'Down';
+        return 'Partial';
+    }
+
     const affectedRegions = Object.keys(regionImpact).length;
     const totalRegions = ALL_REGIONS.length;
     if (healthScore <= 0.3 || affectedRegions >= totalRegions - 1) return 'Down';
@@ -467,6 +617,9 @@ const STATUS_REQUEST_HEADERS = {
     'Accept': 'application/json,text/plain,text/xml,application/xml,text/html,*/*'
 };
 
+const DEFAULT_AWS_PUBLIC_SERVICES_URL = 'https://servicedata-ap-northeast-1-prod.s3.amazonaws.com/services.json';
+const DEFAULT_AWS_PUBLIC_HISTORY_EVENTS_URL = 'https://history-events-ap-northeast-1-prod.s3.amazonaws.com/historyevents.json';
+
 const BANK_HTML_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -477,6 +630,166 @@ const BANK_HTML_HEADERS = {
 
 function unknownStatusResult() {
     return { status: 'Unknown', healthScore: 0, incidents: [], regionImpact: {} };
+}
+
+function normalizeStatusSourceConfig(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function getEntityStatusSource(entity) {
+    const kind = entity?.status_source_kind || entity?.statusSourceKind || 'generic_status_page';
+    const config = normalizeStatusSourceConfig(entity?.status_source_config || entity?.statusSourceConfig);
+    return { kind, config };
+}
+
+function getAwsEventLatestLog(event) {
+    const logs = Array.isArray(event?.event_log) ? event.event_log : [];
+    if (logs.length === 0) return null;
+    return logs[logs.length - 1];
+}
+
+function getAwsActiveImpactedServices(event) {
+    const services = event?.impacted_services || {};
+    return Object.entries(services)
+        .filter(([, info]) => Number(info?.current || 0) > 0)
+        .map(([serviceKey, info]) => ({
+            serviceKey,
+            serviceName: info?.service_name || serviceKey
+        }));
+}
+
+function isAwsEventActive(event) {
+    if (!event || typeof event !== 'object') return false;
+    const latestLog = getAwsEventLatestLog(event);
+    if (latestLog?.status === '0') return false;
+    if (getAwsActiveImpactedServices(event).length > 0) return true;
+
+    const summary = `${event.summary || latestLog?.summary || ''}`.toLowerCase();
+    if (summary.includes('[resolved]')) return false;
+
+    return Boolean(latestLog);
+}
+
+function normalizeAwsPublicIncident(eventKey, event, statusUrl) {
+    const latestLog = getAwsEventLatestLog(event);
+    const impactedServices = getAwsActiveImpactedServices(event);
+    const activeServiceNames = impactedServices.slice(0, 3).map((entry) => entry.serviceName);
+    const detailText = [
+        latestLog?.summary,
+        latestLog?.message,
+        event?.summary,
+        eventKey,
+        ...activeServiceNames,
+    ].filter(Boolean).join(' ');
+
+    const regionMeta = resolveCloudRegionMetadata(detailText);
+    const baseSummary = stripMarkers(latestLog?.summary || event?.summary || 'AWS operational issue');
+    const serviceNote = activeServiceNames.length > 0
+        ? ` affecting ${activeServiceNames.join(', ')}`
+        : '';
+    const locationNote = regionMeta.location ? ` (${regionMeta.location})` : '';
+
+    return {
+        name: `${baseSummary}${locationNote}${serviceNote}`.trim(),
+        link: statusUrl,
+        region: regionMeta.regionCode,
+        awsLocation: regionMeta.location || undefined,
+    };
+}
+
+function buildAwsPublicSignalText(entityName, activeEvents, servicesCount, structuredResult) {
+    const incidentLines = activeEvents.slice(0, 12).map(({ eventKey, event }) => {
+        const latestLog = getAwsEventLatestLog(event);
+        const impactedServices = getAwsActiveImpactedServices(event);
+        const impactedLabel = impactedServices.length > 0
+            ? impactedServices.slice(0, 5).map((entry) => entry.serviceName).join(', ')
+            : 'none listed';
+        return [
+            `Event: ${stripMarkers(latestLog?.summary || event?.summary || eventKey)}`,
+            `Key: ${eventKey}`,
+            `Impacted service count: ${impactedServices.length}`,
+            `Impacted services: ${impactedLabel}`,
+            latestLog?.message ? `Latest update: ${stripMarkers(latestLog.message).slice(0, 600)}` : '',
+        ].filter(Boolean).join('\n');
+    });
+
+    return [
+        `Entity: ${entityName}`,
+        `Source kind: aws_public_health`,
+        `AWS service catalog count: ${servicesCount}`,
+        `Active AWS event count: ${activeEvents.length}`,
+        `Structured baseline status: ${structuredResult.status}`,
+        `Structured baseline healthScore: ${structuredResult.healthScore}`,
+        `Structured baseline incidentCount: ${(structuredResult.incidents || []).length}`,
+        incidentLines.join('\n\n') || 'No active AWS public health events detected',
+    ].filter(Boolean).join('\n');
+}
+
+async function fetchAwsPublicStatus(entity) {
+    const { config } = getEntityStatusSource(entity);
+    const servicesUrl = typeof config.services_url === 'string' && config.services_url.trim()
+        ? config.services_url.trim()
+        : DEFAULT_AWS_PUBLIC_SERVICES_URL;
+    const historyUrl = typeof config.history_url === 'string' && config.history_url.trim()
+        ? config.history_url.trim()
+        : DEFAULT_AWS_PUBLIC_HISTORY_EVENTS_URL;
+    const statusUrl = entity.status_page_url || entity.url;
+    try {
+        const [servicesResponse, historyResponse] = await Promise.all([
+            axios.get(servicesUrl, {
+                headers: STATUS_REQUEST_HEADERS,
+                timeout: 20000,
+            }),
+            axios.get(historyUrl, {
+                headers: STATUS_REQUEST_HEADERS,
+                timeout: 20000,
+            })
+        ]);
+
+        const services = Array.isArray(servicesResponse.data) ? servicesResponse.data : [];
+        const historyMap = historyResponse.data && typeof historyResponse.data === 'object' ? historyResponse.data : {};
+        const activeEvents = Object.entries(historyMap)
+            .flatMap(([eventKey, events]) => (Array.isArray(events) ? events.map((event) => ({ eventKey, event })) : []))
+            .filter(({ event }) => isAwsEventActive(event));
+
+        if (activeEvents.length === 0) {
+            const structuredResult = {
+                status: 'Healthy',
+                healthScore: 1,
+                incidents: [],
+                regionImpact: {},
+                componentSummary: { total: services.length, operational: services.length, nonOperational: 0 }
+            };
+            return {
+                structuredResult,
+                signalText: buildAwsPublicSignalText(entity.name, [], services.length, structuredResult)
+            };
+        }
+
+        const incidents = activeEvents.map(({ eventKey, event }) => normalizeAwsPublicIncident(eventKey, event, statusUrl));
+        const regionImpact = computeRegionImpact(incidents);
+        const activeImpactedServiceCount = new Set(
+            activeEvents.flatMap(({ event }) => getAwsActiveImpactedServices(event).map((entry) => entry.serviceKey))
+        ).size;
+        const nonOperational = Math.max(activeImpactedServiceCount, incidents.length);
+        const totalServices = Math.max(services.length, nonOperational);
+        const healthScore = clamp01(1 - (nonOperational / totalServices));
+        const componentSummary = {
+            total: totalServices,
+            operational: Math.max(0, totalServices - nonOperational),
+            nonOperational,
+        };
+        const status = classifyScopedIncidentStatus(incidents, regionImpact, healthScore, componentSummary);
+        const structuredResult = { status, healthScore, incidents, regionImpact, componentSummary };
+
+        return {
+            structuredResult,
+            signalText: buildAwsPublicSignalText(entity.name, activeEvents, services.length, structuredResult)
+        };
+    } catch (error) {
+        console.warn(`[StatusFetch] ${entity.name}: AWS public health fetch failed (${error.message})`);
+        return null;
+    }
 }
 
 function buildStatusUrlCandidates(statusUrl) {
@@ -653,6 +966,11 @@ function parseStructuredStatusPayload(sourceUrl, payload) {
     const components = Array.isArray(payload?.components) ? payload.components : [];
     const totalComponents = components.length;
     const operationalComponents = components.filter((component) => `${component.status || ''}`.toLowerCase() === 'operational').length;
+    const componentSummary = {
+        total: totalComponents,
+        operational: operationalComponents,
+        nonOperational: Math.max(0, totalComponents - operationalComponents)
+    };
 
     const indicator = payload?.status?.indicator
         || payload?.status?.description
@@ -665,14 +983,18 @@ function parseStructuredStatusPayload(sourceUrl, payload) {
         : (incidents.length > 0 ? Math.max(0.05, 1 - incidents.length * 0.12) : 1);
 
     if (incidents.length > 0 && status === 'Warning') {
-        status = classifyCloudStatus(incidents, regionImpact, healthScore);
+        status = classifyScopedIncidentStatus(incidents, regionImpact, healthScore, componentSummary);
+    }
+
+    if (incidents.length > 0 && status === 'Down' && Object.keys(regionImpact).length > 0) {
+        status = classifyScopedIncidentStatus(incidents, regionImpact, healthScore, componentSummary);
     }
 
     if (status === 'Unknown' && incidents.length === 0 && totalComponents === 0) {
         return null;
     }
 
-    return { status, healthScore, incidents, regionImpact };
+    return { status, healthScore, incidents, regionImpact, componentSummary };
 }
 
 function extractSignalTextFromHtml(html) {
@@ -759,8 +1081,8 @@ async function fetchStatuspageFallback(summaryUrl, entityName) {
         const regionImpact = computeRegionImpact(incidents);
         const healthScore = incidents.length > 0 ? Math.max(0.05, 1 - incidents.length * 0.1) : 1;
         let status = mapIndicatorToStatus(statusPayload.indicator, incidents.length);
-        if (incidents.length > 0 && status === 'Warning') {
-            status = classifyCloudStatus(incidents, regionImpact, healthScore);
+        if (incidents.length > 0 && (status === 'Warning' || status === 'Down')) {
+            status = classifyScopedIncidentStatus(incidents, regionImpact, healthScore, null);
         }
 
         return {
@@ -879,6 +1201,7 @@ function mapIssueTypeToStatus(issueType) {
 async function fetchEntityStatus(entity) {
     const { slug, name, type, url, status_page_url } = entity;
     const statusUrl = status_page_url || url;
+    const statusSource = getEntityStatusSource(entity);
     if (!statusUrl) {
         return {
             status: 'Unknown',
@@ -892,14 +1215,26 @@ async function fetchEntityStatus(entity) {
     const signalChunks = [];
     let structuredResult = null;
 
-    for (const candidate of candidates) {
-        const fetched = await fetchStatusCandidate(name, candidate);
-        if (fetched.result) {
-            structuredResult = fetched.result;
-            break;
+    if (statusSource.kind === 'aws_public_health') {
+        const awsPublicStatus = await fetchAwsPublicStatus(entity);
+        if (awsPublicStatus) {
+            structuredResult = awsPublicStatus.structuredResult || null;
+            if (awsPublicStatus.signalText) {
+                signalChunks.push(awsPublicStatus.signalText);
+            }
         }
-        if (fetched.signalText) {
-            signalChunks.push(fetched.signalText);
+    }
+
+    if (!structuredResult) {
+        for (const candidate of candidates) {
+            const fetched = await fetchStatusCandidate(name, candidate);
+            if (fetched.result) {
+                structuredResult = fetched.result;
+                break;
+            }
+            if (fetched.signalText) {
+                signalChunks.push(fetched.signalText);
+            }
         }
     }
 
@@ -935,6 +1270,19 @@ async function fetchEntityStatus(entity) {
         structuredResult
     });
     const llmResult = sanitizeBankLlmOutcome(type, structuredResult, signalText, llmRaw);
+    const normalizedSignal = stripMarkers(signalText).toLowerCase().replace(/\s+/g, ' ');
+    const keywordHit = extractIssueByKeywords(signalText);
+
+    if ((type === 'cdn' || type === 'cloud') && !structuredResult?.incidents?.length) {
+        if (hasOperationalDisclaimer(normalizedSignal)) {
+            console.log(`[StatusFetch] ${name}: operational disclaimer detected without active structured incidents — treating as Healthy`);
+            return { status: 'Healthy', healthScore: 1, incidents: [], regionImpact: {} };
+        }
+        if (llmResult?.hasIssue && !keywordHit) {
+            console.log(`[StatusFetch] ${name}: LLM-only issue without keyword evidence — treating as Healthy`);
+            return { status: 'Healthy', healthScore: 1, incidents: [], regionImpact: {} };
+        }
+    }
 
     if (!llmResult) {
         console.warn(`[StatusFetch] ${name}: LLM classification unavailable, using baseline and keyword fallback`);
@@ -943,7 +1291,10 @@ async function fetchEntityStatus(entity) {
             const inc = structuredResult.incidents || [];
             const ri = computeRegionImpact(inc);
             if (inc.length === 0) {
-                const st = structuredResult.status || 'Healthy';
+                let st = structuredResult.status || 'Healthy';
+                if (type === 'cdn' && ['Warning', 'Partial', 'Unknown'].includes(st)) {
+                    st = 'Healthy';
+                }
                 const hsDefault = st === 'Maintenance' ? 0.3 : st === 'Down' ? 0.15 : st === 'Warning' ? 0.85 : 1;
                 const hs = Number.isFinite(structuredResult.healthScore)
                     ? clamp01(structuredResult.healthScore)
@@ -966,8 +1317,8 @@ async function fetchEntityStatus(entity) {
             const hs = Number.isFinite(structuredResult.healthScore)
                 ? clamp01(structuredResult.healthScore)
                 : Math.max(0.05, 1 - inc.length * 0.1);
-            if (st === 'Warning') {
-                st = classifyCloudStatus(inc, ri, hs);
+            if (st === 'Warning' || st === 'Down') {
+                st = classifyScopedIncidentStatus(inc, ri, hs, structuredResult?.componentSummary || null);
             }
             const response = { status: st, healthScore: hs, incidents: inc, regionImpact: ri };
             if (st === 'Maintenance') {
@@ -979,22 +1330,30 @@ async function fetchEntityStatus(entity) {
             return response;
         }
 
-        const kw = extractIssueByKeywords(signalText);
+        if (type === 'cdn') {
+            return { status: 'Healthy', healthScore: 1, incidents: [], regionImpact: {} };
+        }
+        if ((type === 'cdn' || type === 'cloud') && hasOperationalDisclaimer(normalizedSignal)) {
+            console.log(`[StatusFetch] ${name}: keyword outage ignored due to operational disclaimer`);
+            return { status: 'Healthy', healthScore: 1, incidents: [], regionImpact: {} };
+        }
+        const kw = keywordHit;
         if (kw && kw.type !== 'maintenance') {
             const cleanSummary = stripMarkers(kw.text);
             const issueType = kw.type;
             const mapped = mapIssueTypeToStatus(issueType);
             const healthScore = issueType === 'full' ? 0.15 : 0.5;
-            const region = getRegion(signalText);
+            const regionMeta = resolveCloudRegionMetadata(signalText);
             return {
                 status: mapped,
                 healthScore,
                 incidents: [{
                     name: cleanSummary,
                     link: statusUrl,
-                    region
+                    region: regionMeta.regionCode,
+                    awsLocation: regionMeta.location || undefined
                 }],
-                regionImpact: computeRegionImpact([{ region }])
+                regionImpact: computeRegionImpact([{ region: regionMeta.regionCode }])
             };
         }
 
@@ -1033,10 +1392,12 @@ async function fetchEntityStatus(entity) {
         : [];
 
     if (llmResult.hasIssue && incidents.length === 0) {
+        const regionMeta = resolveCloudRegionMetadata(signalText);
         incidents = [{
             name: issueType === 'maintenance' ? `Under Maintenance: ${issueName}` : issueName,
             link: statusUrl,
-            region: getRegion(signalText)
+            region: regionMeta.regionCode,
+            awsLocation: regionMeta.location || undefined
         }];
     }
 
@@ -1045,6 +1406,10 @@ async function fetchEntityStatus(entity) {
     }
 
     const regionImpact = computeRegionImpact(incidents);
+
+    if ((type === 'cloud' || type === 'cdn') && status !== 'Maintenance' && incidents.some((incident) => incident.awsLocation || incident.region)) {
+        status = classifyScopedIncidentStatus(incidents, regionImpact, healthScore, structuredResult?.componentSummary || null);
+    }
 
     const response = {
         status,
@@ -1178,6 +1543,13 @@ function hasBankOperationalDisclaimer(normalized) {
         || /\b(no|zero)\s+.{0,20}\boutages?\b/i.test(normalized);
 }
 
+function hasOperationalDisclaimer(normalized) {
+    return hasBankOperationalDisclaimer(normalized)
+        || /\ball\s+services?\s+(operational|available|online)\b/i.test(normalized)
+        || /\bno\s+incidents?\s+reported\b/i.test(normalized)
+        || /\bno\s+known\s+issues?\b/i.test(normalized);
+}
+
 function extractIssueByKeywords(rawText) {
     if (!rawText) return null;
 
@@ -1282,6 +1654,7 @@ async function detectIssueWithLLM(entityName, signalText, options = {}) {
     const { entityType = 'service', structuredResult = null } = options;
 
     if (!signalText || !signalText.trim()) {
+        console.warn(`[LLM] ${entityName}: skipped issue classification because signal text is empty`);
         return null;
     }
 
@@ -1328,11 +1701,49 @@ async function detectIssueWithLLM(entityName, signalText, options = {}) {
         return null;
     }
 
-    console.log(`[StatusFetch] ${entityName}: LLM verdict raw — ${verdict}`);
+    console.log(`[LLM] ${entityName}: raw output=${JSON.stringify((verdict || '').slice(0, 500))}`);
 
     const parsed = parseJsonObject(verdict);
     if (!parsed || typeof parsed.hasIssue !== 'boolean') {
-        return null;
+        try {
+            const statusOnly = await callLLM([
+                {
+                    role: 'system',
+                    content: 'You are a service reliability classifier. Reply with ONLY one of these words: Healthy, Warning, Partial, Maintenance, Down, Unknown.'
+                },
+                {
+                    role: 'user',
+                    content: `Entity: ${entityName}\nEntityType: ${entityType}\nStructuredBaseline: ${structuredHint}\nKeywordHint: ${keywordHint}\nStatusPageContent:\n${truncated}`
+                }
+            ], 8);
+
+            const fallbackStatus = normalizeEntityStatus(statusOnly);
+            if (!fallbackStatus) {
+                console.log(`[LLM] ${entityName}: fallback output=${JSON.stringify((statusOnly || '').slice(0, 120))}`);
+                return null;
+            }
+
+            console.log(`[LLM] ${entityName}: fallback output=${JSON.stringify((statusOnly || '').slice(0, 120))}`);
+
+            const fallbackType = fallbackStatus === 'Maintenance'
+                ? 'maintenance'
+                : fallbackStatus === 'Down'
+                    ? 'full'
+                    : fallbackStatus === 'Partial' || fallbackStatus === 'Warning'
+                        ? 'partial'
+                        : 'none';
+
+            return {
+                hasIssue: !['Healthy', 'Unknown'].includes(fallbackStatus),
+                summary: '',
+                severity: fallbackStatus === 'Down' ? 0.9 : fallbackStatus === 'Partial' || fallbackStatus === 'Warning' ? 0.45 : 0,
+                type: fallbackType,
+                status: fallbackStatus,
+                healthScore: Number.isFinite(structuredResult?.healthScore) ? clamp01(structuredResult.healthScore) : NaN
+            };
+        } catch {
+            return null;
+        }
     }
 
     const typeRaw = typeof parsed.type === 'string' ? parsed.type.toLowerCase().trim() : '';
@@ -1421,6 +1832,42 @@ function normalizeNewsForProvider(provider, articles) {
     return articles.filter(article => isArticleAboutEntity(provider, article));
 }
 
+function buildSnapshotAnalysis(providerData, screenshotMeta) {
+    const incidents = providerData?.incidents || [];
+    const status = providerData?.status || 'Unknown';
+    const healthScore = Number.isFinite(providerData?.healthScore) ? providerData.healthScore : 0;
+    const keywordSeed = incidents.map((incident) => incident?.name || '').join(' ');
+    const keywordHit = extractIssueByKeywords(keywordSeed || '');
+    const sentiment = healthScore >= 0.9
+        ? 'positive'
+        : healthScore >= 0.4
+            ? 'mixed'
+            : 'negative';
+
+    let issueType = 'none';
+    if (status === 'Maintenance') issueType = 'maintenance';
+    else if (status === 'Down') issueType = 'full';
+    else if (status === 'Partial' || status === 'Warning') issueType = 'partial';
+    else if (keywordHit?.type) issueType = keywordHit.type;
+
+    const summary = incidents[0]?.name
+        || (status === 'Healthy' ? 'No active incidents detected' : `Current status is ${status}`);
+
+    const keywords = keywordHit?.text
+        ? [keywordHit.text]
+        : incidents.slice(0, 8).map((incident) => incident.name);
+
+    return {
+        sentiment,
+        summary,
+        issueType,
+        confidence: healthScore >= 0.9 || healthScore <= 0.2 ? 0.9 : 0.65,
+        keywords,
+        screenshotUrl: screenshotMeta?.url || null,
+        screenshotCapturedAt: screenshotMeta?.capturedAt || null,
+    };
+}
+
 async function getLatestSnapshotId(provider) {
     if (!supabase) return null;
 
@@ -1453,11 +1900,12 @@ async function persistEntityNews(provider, articles) {
     }
 }
 
-async function persistToDatabase(data) {
+async function persistToDatabase(data, analysisByProvider = {}) {
     for (const [provider, providerData] of Object.entries(data)) {
         const { status, healthScore, incidents } = providerData;
+        const analysis = analysisByProvider[provider] || {};
 
-        const snapshotId = await storeSnapshot(provider, healthScore, status);
+        const snapshotId = await storeSnapshot(provider, healthScore, status, analysis);
 
         for (const incident of incidents) {
             await storeIncident(snapshotId, provider, incident.name, incident.link, incident.region);
@@ -1480,7 +1928,26 @@ async function updateStatus() {
     }
 
     console.log('[StatusSphere] Fetching fresh status data...');
-    const statusData = await fetchAllStatus();
+    const entities = await refreshEntitiesIfStale();
+    synchronizeCacheEntries();
+
+    const statusData = {};
+    const analysisByProvider = {};
+
+    for (const entity of entities) {
+        let screenshotMeta = screenshotter.getMeta(entity.slug);
+        if (!screenshotMeta) {
+            screenshotMeta = await screenshotter.captureScreenshot(
+                entity.slug,
+                entity.status_page_url || entity.url,
+                entity.url || null
+            );
+        }
+        const result = await fetchEntityStatus(entity);
+        statusData[entity.slug] = result;
+        analysisByProvider[entity.slug] = buildSnapshotAnalysis(result, screenshotMeta);
+    }
+
     const fetchedAt = new Date().toISOString();
     for (const provider of Object.keys(statusData)) {
         const existingNews = cache.data[provider]?.news || [];
@@ -1491,8 +1958,9 @@ async function updateStatus() {
         };
     }
     cache.timestamp = now;
+    headlineCache = { text: '', timestamp: 0 };
 
-    await persistToDatabase(statusData);
+    await persistToDatabase(statusData, analysisByProvider);
 
     return cache.data;
 }
@@ -1521,26 +1989,81 @@ async function updateNews() {
     return cache.data;
 }
 
+let statusSchedulerHandle = null;
+let newsSchedulerHandle = null;
+let statusUpdateInFlight = null;
+let newsUpdateInFlight = null;
+
+async function runStatusUpdateSafely() {
+    if (statusUpdateInFlight) {
+        console.log('[StatusSphere] Skipping status update: previous cycle still running');
+        return statusUpdateInFlight;
+    }
+
+    statusUpdateInFlight = updateStatus()
+        .finally(() => {
+            statusUpdateInFlight = null;
+        });
+
+    return statusUpdateInFlight;
+}
+
+async function runNewsUpdateSafely() {
+    if (newsUpdateInFlight) {
+        console.log('[StatusSphere] Skipping news update: previous cycle still running');
+        return newsUpdateInFlight;
+    }
+
+    newsUpdateInFlight = updateNews()
+        .finally(() => {
+            newsUpdateInFlight = null;
+        });
+
+    return newsUpdateInFlight;
+}
+
+function startBackgroundSchedulers() {
+    if (!statusSchedulerHandle) {
+        statusSchedulerHandle = setInterval(() => {
+            runStatusUpdateSafely().catch((err) => {
+                console.error('[StatusSphere] Scheduled status update error:', err.message);
+            });
+        }, STATUS_POLL_INTERVAL);
+    }
+
+    if (!newsSchedulerHandle) {
+        newsSchedulerHandle = setInterval(() => {
+            runNewsUpdateSafely().catch((err) => {
+                console.error('[StatusSphere] Scheduled news update error:', err.message);
+            });
+        }, NEWS_FETCH_INTERVAL);
+    }
+}
+
 // --- API Routes ---
 
 app.get('/api/config', async (req, res) => {
-    try {
-        await reloadEntities();
-    } catch (err) {
-        console.error('[Entities] Reload failed:', err.message);
-    }
+    await ensureEntitiesLoaded();
     res.json(ENTITY_CONFIG);
 });
 
+app.get('/api/config/intervals', (req, res) => {
+    res.json({
+        statusPollInterval: parseInt(process.env.FRONTEND_STATUS_POLL_INTERVAL) || 120000,
+        headlinePollInterval: parseInt(process.env.FRONTEND_HEADLINE_POLL_INTERVAL) || 120000,
+        screenshotPollInterval: parseInt(process.env.FRONTEND_SCREENSHOT_POLL_INTERVAL) || 15000,
+        screenshotServerInterval: STATUS_POLL_INTERVAL,
+    });
+});
+
 app.get('/status', async (req, res) => {
-    await reloadEntities();
-    await updateStatus();
-    updateNews().catch(err => console.error('[StatusSphere] Background news update error:', err.message));
+    await ensureStatusDataReady();
     res.json(getCurrentStatusData());
 });
 
 app.post('/api/entities/reload', async (req, res) => {
-    await reloadEntities();
+    await refreshEntitiesIfStale(true);
+    await hydrateCacheFromDatabase();
     headlineCache = { text: '', timestamp: 0 };
     res.json({ success: true, entities: ALL_SLUGS.length, slugs: ALL_SLUGS });
 });
@@ -1556,7 +2079,7 @@ app.get('/api/entity/:entity', async (req, res) => {
 
     const { data: entityRow, error: entityError } = await supabase
         .from('entities')
-        .select('slug, name, type, url, status_page_url')
+        .select('slug, name, type, url, status_page_url, status_source_kind, status_source_config')
         .eq('slug', slug)
         .eq('is_active', true)
         .maybeSingle();
@@ -1586,6 +2109,8 @@ app.get('/api/entity/:entity', async (req, res) => {
         category: entityRow.type,
         url: entityRow.url,
         statusUrl: entityRow.status_page_url,
+        statusSourceKind: entityRow.status_source_kind || 'generic_status_page',
+        statusSourceConfig: normalizeStatusSourceConfig(entityRow.status_source_config),
         lastFetch: snapshotRow?.polled_at || null
     });
 });
@@ -1595,15 +2120,21 @@ app.get('/history', async (req, res) => {
         return res.status(503).json({ error: 'Database not configured' });
     }
 
+    const requestedEntity = typeof req.query.entity === 'string' ? req.query.entity.trim() : '';
+    const parsedLimit = parseInt(req.query.limit, 10);
+    const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 50) : 20;
+    const targetSlugs = requestedEntity ? [requestedEntity] : ALL_SLUGS;
     const result = {};
 
-    for (const slug of ALL_SLUGS) {
-        const { data, error } = await supabase
+    for (const slug of targetSlugs) {
+        const query = supabase
             .from('snapshots')
-            .select('id, provider, polled_at, health_score, status')
+            .select('id, provider, polled_at, health_score, status, llm_summary, llm_issue_type, analysis_screenshot_url, analysis_screenshot_captured_at')
             .eq('provider', slug)
             .order('polled_at', { ascending: false })
-            .limit(20);
+            .limit(limit);
+
+        const { data, error } = await query;
 
         if (error) {
             console.error(`[Supabase] Failed to fetch history for ${slug}:`, error.message);
@@ -1620,6 +2151,11 @@ app.get('/news/:entity', async (req, res) => {
     const entity = req.params.entity;
     if (!ENTITY_CONFIG[entity]) {
         return res.status(404).json({ error: 'Unknown entity' });
+    }
+
+    const cachedArticles = await getRecentNewsFromDb(entity, 3);
+    if (cachedArticles.length > 0) {
+        return res.json(cachedArticles);
     }
 
     const query = ENTITY_CONFIG[entity].category === 'bank'
@@ -1661,13 +2197,57 @@ app.get('/api/screenshot/:entity/rendered-text', (req, res) => {
 
 app.get('/api/screenshot/:entity/history', (req, res) => {
     const slug = req.params.entity;
-    const history = screenshotter.getHistory(slug);
-    res.json({ snapshots: history });
+    const memoryHistory = screenshotter.getHistory(slug);
+    if (!supabase) {
+        return res.json({ snapshots: memoryHistory.slice(-5) });
+    }
+
+    supabase
+        .from('snapshots')
+        .select('analysis_screenshot_url, analysis_screenshot_captured_at')
+        .eq('provider', slug)
+        .not('analysis_screenshot_url', 'is', null)
+        .order('analysis_screenshot_captured_at', { ascending: false })
+        .limit(5)
+        .then(({ data, error }) => {
+            if (error) {
+                console.error(`[Supabase] Failed to fetch screenshot history for ${slug}:`, error.message);
+                return res.json({ snapshots: memoryHistory.slice(-5) });
+            }
+
+            const dbSnapshots = (data || [])
+                .filter((row) => row.analysis_screenshot_url)
+                .map((row) => ({
+                    url: row.analysis_screenshot_url,
+                    capturedAt: row.analysis_screenshot_captured_at,
+                }));
+
+            const merged = [...memoryHistory, ...dbSnapshots]
+                .filter((snapshot) => snapshot.url)
+                .sort((a, b) => new Date(a.capturedAt || 0) - new Date(b.capturedAt || 0));
+
+            const deduped = [];
+            const seen = new Set();
+            for (let i = merged.length - 1; i >= 0; i--) {
+                const key = `${merged[i].url}|${merged[i].capturedAt || ''}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                deduped.unshift(merged[i]);
+                if (deduped.length === 5) break;
+            }
+
+            return res.json({ snapshots: deduped });
+        })
+        .catch((err) => {
+            console.error(`[Supabase] Screenshot history lookup failed for ${slug}:`, err.message);
+            return res.json({ snapshots: memoryHistory.slice(-5) });
+        });
 });
 
 // --- LLM Endpoints ---
 
 app.get('/api/headline', async (req, res) => {
+    await ensureStatusDataReady();
     const now = Date.now();
     if (headlineCache.text && now - headlineCache.timestamp < HEADLINE_CACHE_DURATION) {
         return res.json({ headline: headlineCache.text });
@@ -1771,7 +2351,8 @@ app.listen(PORT, async () => {
     setEntities([]);
     initializeCache();
 
-    await reloadEntities();
+    await refreshEntitiesIfStale(true);
+    await hydrateCacheFromDatabase();
 
     console.log(`[StatusSphere] Server running at http://localhost:${PORT}`);
     console.log(`[StatusSphere] Monitoring: ${ALL_SLUGS.join(', ')}`);
@@ -1786,8 +2367,15 @@ app.listen(PORT, async () => {
     } else {
         console.log('[StatusSphere] Supabase: not configured');
     }
-    console.log(`[StatusSphere] Status polling: every ${CACHE_DURATION / 1000} seconds`);
+    console.log(`[StatusSphere] Status polling: every ${STATUS_POLL_INTERVAL / 1000} seconds`);
     console.log(`[StatusSphere] News polling: every ${NEWS_FETCH_INTERVAL / 60000} minutes`);
-
     screenshotter.startScheduler(() => ENTITY_CONFIG);
+    startBackgroundSchedulers();
+
+    runStatusUpdateSafely().catch((err) => {
+        console.error('[StatusSphere] Initial status update error:', err.message);
+    });
+    runNewsUpdateSafely().catch((err) => {
+        console.error('[StatusSphere] Initial news update error:', err.message);
+    });
 });

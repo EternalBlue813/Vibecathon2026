@@ -1,14 +1,17 @@
 const API_URL = '/status';
 const CONFIG_URL = '/api/config';
-const RELOAD_ENTITIES_URL = '/api/entities/reload';
+const INTERVALS_URL = '/api/config/intervals';
 const HEADLINE_URL = '/api/headline';
 const CHAT_URL = '/api/chat';
-const POLL_INTERVAL = 120000;
-const HEADLINE_INTERVAL = 120000;
+let POLL_INTERVAL = 120000;
+let HEADLINE_INTERVAL = 120000;
+const ENTITY_CONFIG_CACHE_KEY = 'statussphere:entity-config:v1';
+const ENTITY_CONFIG_CACHE_TTL = 10 * 60 * 1000;
 
 let entityConfig = {};
 let chatHistory = [];
 let configSignature = '';
+let lastConfigFetch = 0;
 
 const GRID_MAP = {
     bank:  'grid-banks',
@@ -23,9 +26,20 @@ const STATUS_TILE_CONFIG = {
     Partial: { className: 'partial', label: 'Partial Outage' },
 };
 
+async function loadIntervals() {
+    try {
+        const res = await fetch(INTERVALS_URL);
+        const intervals = await res.json();
+        POLL_INTERVAL = intervals.statusPollInterval;
+        HEADLINE_INTERVAL = intervals.headlinePollInterval;
+    } catch (e) {
+        console.error('Failed to load intervals:', e);
+    }
+}
+
 // --- Init ---
 document.addEventListener('DOMContentLoaded', async () => {
-    await reloadEntitiesFromDb();
+    await loadIntervals();
     await refreshConfigIfChanged();
     await fetchData();
     setInterval(fetchData, POLL_INTERVAL);
@@ -39,20 +53,51 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // --- Config + Tiles ---
 async function loadConfig() {
+    const now = Date.now();
+    const canUseMemory = Object.keys(entityConfig).length > 0 && now - lastConfigFetch < ENTITY_CONFIG_CACHE_TTL;
+    if (canUseMemory) return;
+
     try {
         const res = await fetch(CONFIG_URL);
-        entityConfig = await res.json();
+        const nextConfig = await res.json();
+        if (!nextConfig || typeof nextConfig !== 'object') {
+            throw new Error('Invalid entity config response');
+        }
+        entityConfig = nextConfig;
+        lastConfigFetch = now;
+        writeEntityConfigCache(entityConfig);
     } catch (e) {
         console.error('Failed to load entity config:', e);
-        entityConfig = {};
+        const cached = readEntityConfigCache();
+        entityConfig = cached || {};
+        lastConfigFetch = cached ? now : 0;
     }
 }
 
-async function reloadEntitiesFromDb() {
+function readEntityConfigCache() {
     try {
-        await fetch(RELOAD_ENTITIES_URL, { method: 'POST' });
+        const raw = localStorage.getItem(ENTITY_CONFIG_CACHE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return null;
+        if (!parsed.expiresAt || Date.now() > parsed.expiresAt) {
+            localStorage.removeItem(ENTITY_CONFIG_CACHE_KEY);
+            return null;
+        }
+        return parsed.data || null;
     } catch (e) {
-        console.error('Failed to reload entities:', e);
+        return null;
+    }
+}
+
+function writeEntityConfigCache(config) {
+    try {
+        localStorage.setItem(ENTITY_CONFIG_CACHE_KEY, JSON.stringify({
+            expiresAt: Date.now() + ENTITY_CONFIG_CACHE_TTL,
+            data: config
+        }));
+    } catch (e) {
+        // ignore quota/storage errors
     }
 }
 
@@ -102,7 +147,9 @@ async function refreshConfigIfChanged() {
 // --- Status polling ---
 async function fetchData() {
     try {
-        await refreshConfigIfChanged();
+        if (Date.now() - lastConfigFetch >= ENTITY_CONFIG_CACHE_TTL) {
+            await refreshConfigIfChanged();
+        }
         const response = await fetch(API_URL);
         const data = await response.json();
 
@@ -130,6 +177,15 @@ function updateTile(slug, data) {
 
 function updateGlobalStatus(data) {
     const statuses = Object.values(data).map(d => d.status);
+    if (statuses.length === 0) {
+        const globalStatus = document.getElementById('global-status');
+        const indicator = document.querySelector('.live-indicator');
+        globalStatus.innerText = 'Loading System Status';
+        indicator.style.color = '#94a3b8';
+        indicator.style.background = 'rgba(148, 163, 184, 0.15)';
+        return;
+    }
+
     const allHealthy = statuses.every(s => s === 'Healthy');
     const hasDown = statuses.some(s => s === 'Down' || s === 'Warning');
     const hasMaint = statuses.some(s => s === 'Maintenance');
@@ -160,6 +216,12 @@ function updateOutageSummary(data) {
     const el = document.getElementById('outage-text');
     const section = document.getElementById('outage-summary');
     if (!el || !section) return;
+
+    if (Object.keys(data).length === 0) {
+        section.classList.remove('has-issues', 'all-clear');
+        el.innerHTML = 'Loading monitored entities and current incidents...';
+        return;
+    }
 
     const issues = [];
     for (const [slug, info] of Object.entries(data)) {

@@ -1,286 +1,144 @@
 # StatusSphere - Technical Documentation
 
-> **Important:** Update this file whenever project changes are made.
+> **Documentation policy (mandatory):** whenever `server.js`, `.env.example`, database schema/migrations, API contracts, or frontend data flow changes, update **all** of these docs in the same change set:
+> - `StatusSphere/instruction.md`
+> - `StatusSphere/flowchart.md`
+> - `StatusSphere/database/database.md`
+> - `README.md`
 
 ---
 
 ## Overview
 
-StatusSphere is a real-time infrastructure status monitoring dashboard that tracks the health of banks, cloud providers, and CDN services. The main dashboard shows green/red status tiles; clicking a tile opens a detail page with history chart, screenshot area, AI summary, and media news.
+StatusSphere is a real-time infrastructure monitoring dashboard. Entities are database-driven (`entities` table), status is scraped/classified and cached in memory, snapshots are persisted in Supabase, and screenshots are captured to Supabase Storage.
 
-### Monitored Entities
+Entity status fetching is source-driven:
+- `generic_status_page` for the standard summary/status-page pipeline
+- `aws_public_health` for AWS public health feeds
 
-| Entity | Slug | Category | Status Source |
-|--------|------|----------|---------------|
-| DBS | dbs | Bank | Live URL scrape (`url` + `status_page_url`) |
-| OCBC | ocbc | Bank | Live URL scrape (`url` + `status_page_url`) |
-| UOB | uob | Bank | Live URL scrape (`url` + `status_page_url`) |
-| Citi | citi | Bank | Live URL scrape (`url` + `status_page_url`) |
-| SCB | scb | Bank | Live URL scrape (`url` + `status_page_url`) |
-| HSBC | hsbc | Bank | Live URL scrape (`url` + `status_page_url`) |
-| Maybank | maybank | Bank | Live URL scrape (`url` + `status_page_url`) |
-| AWS | aws | Cloud | AWS Health API |
-| Azure | azure | Cloud | Azure Status Feed (RSS) |
-| Google Cloud | gcp | Cloud | Google Cloud Status JSON |
-| Cloudflare | cloudflare | CDN | Statuspage API |
-| Akamai | akamai | CDN | Statuspage API |
+## Current Architecture
 
----
+- Backend: `server.js` (Express)
+- Persistence: Supabase Postgres (`snapshots`, `incidents`, `news_articles`, `entities`)
+- Storage: Supabase bucket `entity-image-snapshot`
+- Frontend:
+  - `public/index.html` + `public/app.js` (homepage)
+  - `public/detail.html` + `public/detail.js` (entity detail)
 
-## Architecture
+## Runtime Data Model
 
-```
-┌─────────────┐     ┌──────────────────┐     ┌──────────────┐
-│   Browser   │────▶│  Express Server  │────▶│   Supabase   │
-│  (Frontend) │◀────│   (server.js)    │────▶│  (Database)  │
-└─────────────┘     └────────┬─────────┘     └──────────────┘
-                              │
-                    ┌─────────▼─────────┐
-                    │  Cloud Provider   │
-                    │      APIs          │
-                    └───────────────────┘
-```
+- Entities come from DB (`entities.is_active=true`) and are cached in:
+  - `ENTITY_CONFIG`, `ALL_SLUGS`, `BANK_SLUGS`, `CLOUD_SLUGS`, `CDN_SLUGS`
+- Entity source metadata comes from DB:
+  - `status_source_kind`
+  - `status_source_config`
+- Status cache is in-memory:
+  - `cache = { timestamp, data }`
+  - each entry: `status`, `healthScore`, `incidents`, `news`, `regionImpact`, `fetchedAt`
+- On-demand hydration from DB if cache is empty/default:
+  - `ensureStatusDataReady()` hydrates from latest snapshots before serving `/status` and `/api/headline`
 
-### Pages
+## Key Behaviors (Latest)
 
-| Page | Purpose |
-|------|---------|
-| `public/index.html` | Dashboard with green/red status tiles (banks, cloud, CDN) |
-| `public/detail.html` | Detail page per entity: history chart, screenshot, AI summary, news |
-
-### Files
-
-| File | Purpose |
-|------|---------|
-| `server.js` | Express server, fetches data, handles API routes, entity config |
-| `supabase.js` | Supabase client, database operations |
-| `public/index.html` | Dashboard HTML (tile grid) |
-| `public/app.js` | Dashboard JS: reloads entities on load, polls `/api/config` + `/status`, updates tiles |
-| `public/detail.html` | Detail page HTML |
-| `public/detail.js` | Detail page JS: loads entity URLs from DB (`entities`), last fetch from `snapshots`, and renders live status-page preview |
-| `public/style.css` | Shared stylesheet (dashboard + detail) |
-| `database/001-initial.sql` | Initial schema |
-| `database/002-add-banks.sql` | Migration to allow bank slugs |
-| `database/003-entities.sql` | Creates `entities` table and seed entities |
-| `database/004-fix-provider-constraint.sql` | Drops legacy provider CHECK and enforces FK to `entities.slug` |
-| `database/005-allow-maintenance-partial-status.sql` | Expands `snapshots.status` CHECK to include `Maintenance` and `Partial` |
-
----
-
-## Data Fetching
-
-### Intervals
-
-| Data Type | Frequency | Storage |
-|-----------|-----------|---------|
-| Status data | Every 2 minutes | `snapshots` table |
-| News data | Every 30 minutes | `news_articles` table |
-
-### Status Fetchers
-
-| Function | Source | Notes |
-|----------|--------|-------|
-| `fetchAWS()` | AWS Health API | UTF-16 encoded response |
-| `fetchAzure()` | Azure RSS Feed | XML format |
-| `fetchGCP()` | GCP Status JSON | Open incidents only |
-| `fetchStatusPage()` | Atlassian Statuspage API | Generic CDN/Cloud status pages + 403 fallback |
-| `fetchBankStatus(entity)` | Bank website/status URLs | Uses LLM classification to determine issue + health score from scraped page content |
-
-### News Source
-
-- Google News RSS feed
-- Searches for: `<entity> outage OR downtime`
-- Banks use `<name> bank outage OR downtime`
-- Returns top 3 articles per entity
-
----
-
-## Database Schema
-
-### Tables
-
-```sql
-snapshots        -- One row per entity per poll
-incidents        -- Outages linked to snapshots
-news_articles    -- Related news linked to snapshots
-```
-
-### Migrations
-
-- `001-initial.sql` — Creates tables, indexes, pg_cron cleanup
-- `002-add-banks.sql` — Extends provider CHECK to include bank slugs + 'Down' status
-- `003-entities.sql` — Creates `entities` table for dynamic scraping (replaces hardcoded config)
-- `004-fix-provider-constraint.sql` — Drops legacy provider CHECK and enforces `snapshots.provider -> entities.slug` foreign key
-- `005-allow-maintenance-partial-status.sql` — Updates `snapshots.status` CHECK to allow `Maintenance` and `Partial`
-
-### Running Migrations
-
-Run migrations via Supabase Dashboard SQL Editor or CLI:
-
-```bash
-# Option 1: Supabase Dashboard
-# 1. Go to https://supabase.com/dashboard
-# 2. Select your project → SQL Editor
-# 3. Run SQL in order: 003-entities.sql, 004-fix-provider-constraint.sql, then 005-allow-maintenance-partial-status.sql
-
-# Option 2: Supabase CLI
-supabase db push
-```
-
-### SQL Migration Policy
-
-- Never edit old migration files once committed/applied.
-- For any schema/data change, create a new incremental file in `database/` (e.g. `005-...sql`).
-- Document the new migration in this file under **Migrations** and **Changelog**.
-
-### Cleanup
-
-- Automatic deletion via pg_cron
-- Runs daily at 3:00 AM
-- Removes data older than 1 day
-
----
+- Homepage entity/config load is API-first (server/DB first), browser cache second.
+- `/api/config` ensures entities are loaded from DB before response.
+- `/status` ensures DB-backed status hydration when memory is empty/default.
+- `/api/headline` now also ensures status data is ready before composing fallback/LLM headline.
+- Detail page loads last 5 snapshots by default (`/history?entity=<slug>&limit=5`).
+- Screenshot history endpoint returns last 5 in-memory captures, or last 5 DB snapshot screenshot URLs when memory is empty.
+- Incident severity for cloud/CDN uses scoped-impact classification (`classifyScopedIncidentStatus`) to avoid reporting provider-wide `Down` for limited regional impact.
+- AWS public health pages use AWS's own public service/event feeds (`services.json`, `historyevents.json`) as structured evidence, then flow through the normal LLM decision path with scoped-impact safeguards.
+- Screenshot capture is now scheduler-owned for steady-state operation; status polling only bootstraps a capture when no screenshot exists yet, which avoids overlapping startup captures.
+- If the strict JSON LLM classifier fails, the server falls back to a simpler one-word LLM status decision before using non-LLM fallback logic.
 
 ## API Endpoints
 
-### GET `/api/config`
-
-Returns the entity configuration map (slug → name, category).
-This endpoint reloads entities from Supabase before returning data.
-
-### GET `/status`
-
-Returns current status for all entities from live scraping.
-
-Includes `fetchedAt` timestamp for each entity.
-
-**Response:**
-```json
-{
-  "dbs": {
-    "status": "Healthy",
-    "healthScore": 1.0,
-    "incidents": [],
-    "news": [],
-    "regionImpact": {}
-  },
-  "aws": {
-    "status": "Healthy",
-    "healthScore": 1.0,
-    "incidents": [...],
-    "news": [...],
-    "regionImpact": {"NA": 0, "EU": 1}
-  }
-}
-```
-
-### GET `/history`
-
-Returns latest 20 snapshots per entity from database.
-
-### GET `/news/:entity`
-
-Returns fresh news articles for a specific entity (used by detail page).
-
-### POST `/api/entities/reload`
-
-Forces server-side entity reload from Supabase without restarting the server.
-
-**Response:** `{ "success": true, "entities": <count>, "slugs": [...] }`
-
-### GET `/api/entity/:entity`
-
-Returns DB-backed metadata for one entity.
-
-- URLs from `entities` table (`url`, `status_page_url`)
-- Last fetch timestamp from latest row in `snapshots` table (`polled_at`)
-
----
-
-## Data Flow
-
-```
-Page Load (Dashboard):
-  Browser → POST /api/entities/reload → refresh DB entities immediately
-  Browser → GET /api/config → Build tiles
-  Browser → GET /status → Color tiles green/red
-
-Page Load (Detail):
-  Browser → POST /api/entities/reload → refresh DB entities immediately
-  Browser → GET /api/config → Set entity name + URLs + preview source
-  Browser → GET /history → Populate chart
-  Browser → GET /status → Update badge + chart + last fetch time
-  Browser → GET /news/:entity → Populate news list
-
-Live Polling (every 2 min):
-  Dashboard: GET /api/config + GET /status → Reload latest entities + update tile states
-  Detail: GET /api/config + GET /status → Reload entity metadata, URLs, preview target, and fetch timestamp
-```
-
----
+- `GET /api/config`
+  - Returns entity config map.
+  - Ensures entity load from DB first.
+  - Cached entity data includes source metadata.
+- `GET /api/config/intervals`
+  - Returns frontend/server polling values.
+- `GET /status`
+  - Returns current status map.
+  - Ensures entities + DB hydration when memory is empty/default.
+- `POST /api/entities/reload`
+  - Forces entity refresh and cache hydration from DB.
+- `GET /api/entity/:entity`
+  - Returns metadata from `entities` plus latest `snapshots.polled_at`.
+- `GET /history`
+  - Returns snapshot history from DB.
+  - Supports query params: `entity` (single slug), `limit` (default 20, max 50).
+- `GET /news/:entity`
+  - Returns DB-recent news first, otherwise fetches + persists.
+- `GET /api/screenshot/:entity`
+  - Latest screenshot meta in memory.
+- `GET /api/screenshot/:entity/history`
+  - Returns up to last 5 screenshots (memory-first, DB fallback via `snapshots.analysis_screenshot_url`).
+- `GET /api/screenshot/:entity/rendered-text`
+  - Rendered text extracted from screenshot session (memory).
+- `GET /api/screenshots`
+  - All in-memory screenshot metas.
+- `GET /api/headline`
+  - LLM headline with fallback template.
+- `POST /api/chat`
+  - Guardrailed infra-status chat.
 
 ## Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SUPABASE_URL` | - | Supabase project URL |
-| `SUPABASE_SECRET_KEY` | - | Supabase secret key (server-side only) |
-| `PORT` | 3000 | Server port |
-| `CACHE_DURATION` | 120000 | Status cache (2 min in ms) |
+Based on `.env.example` and `server.js`:
 
----
+| Variable | Default | Notes |
+|---|---|---|
+| `SUPABASE_URL` | - | Required for DB/storage features |
+| `SUPABASE_SERVICE_ROLE_KEY` | - | Primary server secret |
+| `SUPABASE_SECRET_KEY` | - | Backward-compatible alias |
+| `PORT` | `3000` | Express port |
+| `CACHE_DURATION` | `120000` | Status cache ms |
+| `NEWS_FETCH_INTERVAL` | `1800000` | News refresh ms |
+| `HEADLINE_CACHE_DURATION` | `120000` | Headline cache ms |
+| `SCREENSHOT_INTERVAL` | `60000` | Screenshot scheduler interval ms |
+| `ENTITY_REFRESH_INTERVAL` | `1800000` | Entity refresh staleness window ms |
+| `STATUS_POLL_INTERVAL` | `CACHE_DURATION` | Optional server-side scheduled status interval |
+| `FRONTEND_STATUS_POLL_INTERVAL` | `120000` | Dashboard/detail polling |
+| `FRONTEND_HEADLINE_POLL_INTERVAL` | `120000` | Headline polling |
+| `FRONTEND_SCREENSHOT_POLL_INTERVAL` | `15000` | Detail screenshot polling |
+| `LLM_API_KEY` | - | Primary LLM key |
+| `OPENROUTER_API_KEY` | - | Backward-compatible LLM key alias |
+| `LLM_MODEL` | `google/gemini-2.0-flash-001` | Chat/completion model |
+| `OPENROUTER_MODEL` | `google/gemini-2.0-flash-001` | Backward-compatible model alias |
+| `LLM_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible base URL |
 
-## Development
+## Database Change Required
 
-### Adding a New Bank / Provider
+Run:
 
-1. Add entry to `entities` table in Supabase (via SQL or dashboard)
-2. Set `slug`, `name`, `type` (bank/cdn/cloud), `url`, `status_page_url`
-3. Server automatically fetches from DB on startup and scrapes dynamically
-4. Frontend tiles auto-generate from `/api/config`
-5. Update this document
+- `StatusSphere/database/009-entity-status-source-config.sql`
 
-**Note:** No code changes needed - entities are now database-driven!
+This adds to `entities`:
+- `status_source_kind TEXT NOT NULL DEFAULT 'generic_status_page'`
+- `status_source_config JSONB NOT NULL DEFAULT '{}'::jsonb`
 
-### Refreshing Entities Without Restart
+Behavior after migration:
+- all existing entities remain on `generic_status_page`
+- only `aws` is switched to `aws_public_health`
+- `status_page_url` remains unchanged and is still used for screenshots/detail links
 
-1. Update records in Supabase `entities` table
-2. Call `POST /api/entities/reload`
-3. Next dashboard/detail poll will pick up latest entities and labels
+## Operations Notes
 
-### Modifying Fetch Intervals
-
-- Status: Set `CACHE_DURATION` in `.env` (default 120s)
-- News: Set `NEWS_FETCH_INTERVAL` in `.env` (default 30min)
-- Headline: Set `HEADLINE_CACHE_DURATION` in `.env` (default 120s)
-
-### Bank Status Detection
-
-Bank status detection works by:
-1. Scraping the bank's website (URL from `status_page_url` or `url` in `entities` table)
-2. Extracting text from title, headings, alerts, banners
-3. Sending to LLM to classify if there's an active issue
-
-**Important**: Most banks don't have dedicated status pages like cloud providers. The scraper pulls from their main website which may not show alerts prominently. For best results, ensure `status_page_url` points to a page with alerts/banners.
+- Add/update entities directly in `entities`; frontend tiles are generated from `/api/config`.
+- Use `POST /api/entities/reload` to force immediate refresh without restart.
+- Never edit old migration files; add new numbered migration files.
 
 ---
 
 ## Last Updated
 
-Document version: 3.5
+Document version: 3.6
 Last updated: 2026-04-01
 
 ## Changelog
 
 | Version | Date | Changes |
-|---------|------|---------|
-| 3.5 | 2026-04-01 | Cleaned stale code and assets: removed temporary debug telemetry hooks from `server.js`, removed unused `/api/proxy` route, simplified status/badge mapping logic in frontend scripts, deleted duplicate `005` migration and obsolete diagnostics/assets files |
-| 3.4 | 2026-03-31 | Bank `health_score` now LLM-driven from scraped status-page content, added `GET /api/entity/:entity` (URLs from `entities`, last fetch from `snapshots`), detail preview now uses `entities.status_page_url` |
-| 3.3 | 2026-03-31 | Dashboard/detail now force DB entity reload on page load, detail page shows main/status URLs + live website preview + last fetch timestamp, AI summary moved above chart |
-| 3.2 | 2026-03-31 | Removed all simulation flows, added live bank scraping from Supabase URLs, added `POST /api/entities/reload`, frontend now refreshes entity config on each fetch, documented SQL migration policy |
-| 3.1 | 2026-03-31 | Fixed dynamic scraping: removed duplicate hardcoded status fetcher, improved bank incident extraction, added Fastly 403 fallback, added provider constraint fix migration |
-| 3.0 | 2026-03-31 | Entities now database-driven: added `entities` table, dynamic scraping from DB, removed hardcoded config |
-| 2.0 | 2026-03-27 | Redesign: mobile-first tile dashboard, detail page (chart, screenshot, AI summary, news), added 7 banks (simulated), removed world map, removed Fastly from UI |
-| 1.2 | 2026-03-25 | Fixed news persistence timing, retained last news when fetch is empty, moved incidents to count + merged feed items |
-| 1.1 | 2026-03-25 | Added `/history` endpoint, browser caching, database-first data loading |
-| 1.0 | 2026-03-25 | Initial version |
+|---|---|---|
+| 3.6 | 2026-04-01 | Added mandatory cross-doc update policy; documented DB-first hydration for `/api/config`, `/status`, `/api/headline`; documented `/history` query params (`entity`, `limit`); documented screenshot history last-5 memory-first with DB fallback; documented scoped incident classification for regional cloud/CDN incidents; documented AWS public feed adapter (`services.json`, `historyevents.json`) and DB-driven entity source config via `status_source_kind`/`status_source_config`; synced env vars with `.env.example` + `server.js` |

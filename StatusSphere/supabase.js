@@ -20,13 +20,22 @@ const SNAPSHOT_STATUS_MAP = {
     Partial: 'Partial',
 };
 
+function normalizeKeywords(keywords) {
+    if (!Array.isArray(keywords)) return [];
+    return [...new Set(
+        keywords
+            .map((k) => `${k || ''}`.trim().toLowerCase())
+            .filter(Boolean)
+    )].slice(0, 40);
+}
+
 function normalizeSnapshotStatus(status) {
     if (typeof status !== 'string') return 'Unknown';
     const trimmed = status.trim();
     return SNAPSHOT_STATUS_MAP[trimmed] || 'Unknown';
 }
 
-async function storeSnapshot(provider, healthScore, status) {
+async function storeSnapshot(provider, healthScore, status, analysis = {}) {
     if (!supabase) return null;
 
     const dbStatus = normalizeSnapshotStatus(status);
@@ -40,7 +49,14 @@ async function storeSnapshot(provider, healthScore, status) {
             provider,
             health_score: healthScore,
             status: dbStatus,
-            polled_at: new Date().toISOString()
+            polled_at: new Date().toISOString(),
+            llm_sentiment: analysis.sentiment || null,
+            llm_summary: analysis.summary || null,
+            llm_issue_type: analysis.issueType || null,
+            llm_confidence: Number.isFinite(analysis.confidence) ? analysis.confidence : null,
+            extracted_keywords: normalizeKeywords(analysis.keywords),
+            analysis_screenshot_url: analysis.screenshotUrl || null,
+            analysis_screenshot_captured_at: analysis.screenshotCapturedAt || null,
         })
         .select('id')
         .single();
@@ -74,6 +90,11 @@ async function storeIncident(snapshotId, provider, name, link, region) {
 async function storeNews(snapshotId, provider, title, link, source, publishedAt) {
     if (!supabase || !snapshotId) return;
 
+    const normalizedProvider = `${provider || ''}`.trim().toLowerCase();
+    const normalizedTitle = `${title || ''}`.trim().toLowerCase();
+    const normalizedLink = `${link || ''}`.trim().toLowerCase();
+    const dedupeKey = `${normalizedProvider}|${normalizedTitle}|${normalizedLink}`;
+
     const duplicateWindowStart = new Date(Date.now() - (24 * 60 * 60 * 1000)).toISOString();
     const existingQuery = supabase
         .from('news_articles')
@@ -96,14 +117,18 @@ async function storeNews(snapshotId, provider, title, link, source, publishedAt)
 
     const { error } = await supabase
         .from('news_articles')
-        .insert({
+        .upsert({
             snapshot_id: snapshotId,
             provider,
             title,
             link,
             source,
             published_at: publishedAt,
-            fetched_at: new Date().toISOString()
+            fetched_at: new Date().toISOString(),
+            dedupe_key: dedupeKey
+        }, {
+            onConflict: 'dedupe_key',
+            ignoreDuplicates: true,
         });
 
     if (error) {
