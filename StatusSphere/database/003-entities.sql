@@ -27,7 +27,7 @@ INSERT INTO entities (slug, name, type, url, status_page_url) VALUES
 INSERT INTO entities (slug, name, type, url, status_page_url) VALUES
     ('cloudflare', 'Cloudflare', 'cdn', 'https://www.cloudflare.com', 'https://www.cloudflarestatus.com'),
     ('akamai', 'Akamai', 'cdn', 'https://www.akamai.com', 'https://status.akamai.com'),
-    ('fastly', 'Fastly', 'cdn', 'https://www.fastly.com', 'https://status.fastly.com');
+    ('imperva', 'Imperva', 'cdn', 'https://www.imperva.com', 'https://status.imperva.com');
 
 -- 4. SEED DATA - Banks (Singapore/Major Asia)
 INSERT INTO entities (slug, name, type, url, status_page_url) VALUES
