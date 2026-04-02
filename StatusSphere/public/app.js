@@ -265,7 +265,7 @@ function initAskBar() {
         try {
             const data = await requestChatReply();
 
-            setRichTextContent(responseEl, data.reply, data.format);
+            responseEl.innerHTML = formatChatText(data.reply);
             responseEl.classList.remove('loading');
 
             if (data.guardrail === 'input_blocked') {
@@ -274,7 +274,7 @@ function initAskBar() {
 
             chatHistory.push({ role: 'assistant', content: data.reply });
         } catch (err) {
-            responseEl.textContent = 'Sorry, something went wrong. Please try again.';
+            responseEl.innerHTML = formatChatText('Sorry, something went wrong. Please try again.');
             responseEl.classList.remove('loading');
         }
 
@@ -338,7 +338,7 @@ function initChat() {
         try {
             const data = await requestChatReply();
 
-            setAssistantMessageContent(typingEl, data.reply, data.format);
+            typingEl.querySelector('p').innerHTML = formatChatText(data.reply);
             typingEl.classList.remove('typing');
 
             if (data.guardrail === 'input_blocked') {
@@ -347,7 +347,7 @@ function initChat() {
 
             chatHistory.push({ role: 'assistant', content: data.reply });
         } catch (err) {
-            typingEl.querySelector('p').textContent = 'Sorry, something went wrong. Please try again.';
+            typingEl.querySelector('p').innerHTML = formatChatText('Sorry, something went wrong. Please try again.');
             typingEl.classList.remove('typing');
         }
     });
@@ -369,11 +369,7 @@ function appendMessage(role, text, format = CHAT_RESPONSE_FORMAT) {
     const container = document.getElementById('chat-messages');
     const div = document.createElement('div');
     div.className = `chat-msg ${role}`;
-    if (role === 'assistant') {
-        setAssistantMessageContent(div, text, format);
-    } else {
-        div.innerHTML = `<p>${escapeHtml(text)}</p>`;
-    }
+    div.innerHTML = `<p>${formatChatText(text)}</p>`;
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
     return div;
@@ -532,4 +528,21 @@ function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+}
+
+// Render newlines from the AI response as visible line breaks in HTML.
+// We escape first, then add <br/> for each newline to preserve formatting safely.
+function formatChatText(text) {
+    const normalized = String(text ?? '').replace(/\r\n/g, '\n');
+    let html = escapeHtml(normalized);
+
+    // Minimal markdown rendering for readability (safe: all source was escaped).
+    // Bold: **text**
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    // Inline code: `code`
+    html = html.replace(/`([^`]+?)`/g, '<code>$1</code>');
+
+    // Newline -> visible break
+    html = html.replace(/\n/g, '<br/>');
+    return html;
 }

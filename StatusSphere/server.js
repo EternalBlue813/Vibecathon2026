@@ -553,6 +553,20 @@ function classifyScopedIncidentStatus(incidents, regionImpact, healthScore, comp
             .filter(Boolean)
     ).size;
 
+    const continentKeys = Object.keys(regionImpact || {});
+    /** Statuspage-style APIs list many per-product rows; a regional outage can flip most components without meaning global Down. */
+    const isGeographicallyScopedOutage = affectedScopedLocations > 0
+        && continentKeys.length > 0
+        && continentKeys.length <= 2;
+
+    if (componentSummary?.total > 0) {
+        const nonOperationalRatio = componentSummary.nonOperational / componentSummary.total;
+        if (isGeographicallyScopedOutage) {
+            return 'Partial';
+        }
+        if (nonOperationalRatio >= 0.85 || healthScore <= 0.15) return 'Down';
+        if (affectedScopedLocations > 0 || nonOperationalRatio > 0) return 'Partial';
+    }
     const affectedRegions = Object.keys(regionImpact).length;
     const totalRegions = ALL_REGIONS.length;
 
@@ -567,12 +581,12 @@ function classifyScopedIncidentStatus(incidents, regionImpact, healthScore, comp
         return 'Partial';
     }
 
-    if (componentSummary?.total > 0) {
-        const nonOperationalRatio = componentSummary.nonOperational / componentSummary.total;
-        if (nonOperationalRatio >= 0.85 || healthScore <= 0.15) return 'Down';
-        if (nonOperationalRatio > 0) return 'Partial';
+    const affectedRegions = continentKeys.length;
+    const totalRegions = ALL_REGIONS.length;
+    // Few continents implicated → partial / regional, not global Down.
+    if (affectedRegions > 0 && affectedRegions <= 2 && affectedRegions < totalRegions - 1) {
+        return 'Partial';
     }
-
     if (healthScore <= 0.3 || affectedRegions >= totalRegions - 1) return 'Down';
     return 'Partial';
 }
@@ -959,8 +973,12 @@ function normalizeIncident(incident, sourceUrl, pageUrl) {
 function computeRegionImpact(incidents) {
     const regionImpact = {};
     for (const incident of incidents) {
-        if (incident.region) {
-            regionImpact[incident.region] = (regionImpact[incident.region] || 0) + 1;
+        let code = incident.region;
+        if (!code && incident.awsLocation) {
+            code = resolveCloudRegionMetadata(String(incident.awsLocation)).regionCode;
+        }
+        if (code) {
+            regionImpact[code] = (regionImpact[code] || 0) + 1;
         }
     }
     return regionImpact;
@@ -1029,7 +1047,7 @@ function parseStructuredStatusPayload(sourceUrl, payload) {
         status = classifyScopedIncidentStatus(incidents, regionImpact, healthScore, componentSummary);
     }
 
-    if (incidents.length > 0 && status === 'Down' && Object.keys(regionImpact).length > 0) {
+    if (incidents.length > 0 && status === 'Down') {
         status = classifyScopedIncidentStatus(incidents, regionImpact, healthScore, componentSummary);
     }
 
@@ -1357,11 +1375,21 @@ async function fetchEntityStatus(entity) {
                 return base;
             }
             let st = structuredResult.status;
-            const hs = Number.isFinite(structuredResult.healthScore)
+            let hs = Number.isFinite(structuredResult.healthScore)
                 ? clamp01(structuredResult.healthScore)
                 : Math.max(0.05, 1 - inc.length * 0.1);
             if (st === 'Warning' || st === 'Down') {
                 st = classifyScopedIncidentStatus(inc, ri, hs, structuredResult?.componentSummary || null);
+            }
+            // Safety net for region-scoped "Down" where only a small set of continents are affected.
+            if ((type === 'cloud' || type === 'cdn') && st === 'Down') {
+                const affectedRegions = Object.keys(ri || {}).length;
+                if (affectedRegions > 0 && affectedRegions <= 2) {
+                    st = 'Partial';
+                    // Graph band: orange is >= 0.3. Use mid-high scores for partial.
+                    // Single-continent impact tends to be less severe than multi-continent.
+                    hs = affectedRegions <= 1 ? 0.55 : 0.65;
+                }
             }
             const response = { status: st, healthScore: hs, incidents: inc, regionImpact: ri };
             if (statusSource.kind === 'aws_public_health' && structuredResult?.componentSummary) {
@@ -1388,23 +1416,29 @@ async function fetchEntityStatus(entity) {
             const cleanSummary = stripMarkers(kw.text);
             const issueType = kw.type;
             const mapped = mapIssueTypeToStatus(issueType);
-            const healthScore = issueType === 'full' ? 0.15 : 0.5;
             const regionMeta = resolveCloudRegionMetadata(signalText);
-            const regionImpact = computeRegionImpact([{ region: regionMeta.regionCode }]);
-            const status = shouldForcePartialForLimitedRegions(type, mapped, regionImpact, signalText)
-                ? 'Partial'
-                : mapped;
-            return {
-                status,
-                healthScore,
-                incidents: [{
-                    name: cleanSummary,
-                    link: statusUrl,
-                    region: regionMeta.regionCode,
-                    awsLocation: regionMeta.location || undefined
-                }],
-                regionImpact
-            };
+            const incidents = [{
+                name: cleanSummary,
+                link: statusUrl,
+                region: regionMeta.regionCode,
+                awsLocation: regionMeta.location || undefined
+            }];
+            const regionImpact = computeRegionImpact(incidents);
+
+            let status = mapped;
+            let healthScore = issueType === 'full' ? 0.15 : 0.5;
+
+            // If the "full outage" keyword refers to a region-scoped issue, ensure we
+            // classify it as Partial (orange on the graph) instead of global Down/red.
+            if (type === 'cloud' || type === 'cdn') {
+                status = classifyScopedIncidentStatus(incidents, regionImpact, healthScore, null);
+                if (status === 'Partial') {
+                    const affectedRegions = Object.keys(regionImpact).length;
+                    healthScore = affectedRegions <= 1 ? 0.55 : affectedRegions <= 2 ? 0.65 : 0.42;
+                }
+            }
+
+            return { status, healthScore, incidents, regionImpact };
         }
 
         return { status: 'Healthy', healthScore: 1, incidents: [], regionImpact: {} };
