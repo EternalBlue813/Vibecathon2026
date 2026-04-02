@@ -7,6 +7,7 @@ const PAGE_TIMEOUT = 20000;
 const SETTLE_MS = 1500;
 const SCREENSHOT_INTERVAL = parseInt(process.env.SCREENSHOT_INTERVAL) || 60 * 1000;
 const MAX_SNAPSHOTS = parseInt(process.env.SCREENSHOT_HISTORY_LIMIT) || 120;
+const SCREENSHOT_SCHEDULER_ENABLED = `${process.env.SCREENSHOT_SCHEDULER_ENABLED || 'false'}`.toLowerCase() === 'true';
 const BUCKET = 'entity-image-snapshot';
 
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -32,7 +33,7 @@ const CHROME_PATHS = [
 
 function findSystemChrome() {
     for (const p of CHROME_PATHS) {
-        try { if (fs.existsSync(p)) return p; } catch {}
+        try { if (fs.existsSync(p)) return p; } catch { }
     }
     return null;
 }
@@ -229,7 +230,7 @@ async function captureScreenshot(slug, primaryUrl, fallbackUrl) {
         return null;
     } finally {
         if (page) {
-            try { await page.close(); } catch {}
+            try { await page.close(); } catch { }
         }
     }
 }
@@ -248,6 +249,21 @@ async function captureAll(entityConfig) {
         }
     }
     console.log('[Screenshot] Capture cycle complete.');
+}
+
+function getCapturedAtMs(slug) {
+    const ts = screenshotMeta[slug]?.capturedAt;
+    if (!ts) return 0;
+    const ms = new Date(ts).getTime();
+    return Number.isFinite(ms) ? ms : 0;
+}
+
+async function captureIfStale(slug, primaryUrl, fallbackUrl, minIntervalMs = SCREENSHOT_INTERVAL) {
+    const lastMs = getCapturedAtMs(slug);
+    if (lastMs > 0 && Date.now() - lastMs < Math.max(0, minIntervalMs)) {
+        return getMeta(slug);
+    }
+    return captureScreenshot(slug, primaryUrl, fallbackUrl);
 }
 
 function getMeta(slug) {
@@ -281,6 +297,11 @@ let intervalHandle = null;
 function startScheduler(getEntityConfig) {
     if (intervalHandle) return;
 
+    if (!SCREENSHOT_SCHEDULER_ENABLED) {
+        console.log('[Screenshot] Scheduler disabled (set SCREENSHOT_SCHEDULER_ENABLED=true to enable global capture cycles)');
+        return;
+    }
+
     intervalHandle = setInterval(() => {
         captureAll(getEntityConfig()).catch(err =>
             console.error('[Screenshot] Scheduled capture error:', err.message)
@@ -296,9 +317,9 @@ async function shutdown() {
         intervalHandle = null;
     }
     if (browser) {
-        try { await browser.close(); } catch {}
+        try { await browser.close(); } catch { }
         browser = null;
     }
 }
 
-module.exports = { startScheduler, captureScreenshot, getMeta, getAllMeta, getHistory, getRenderedText, shutdown };
+module.exports = { startScheduler, captureScreenshot, captureIfStale, getMeta, getAllMeta, getHistory, getRenderedText, shutdown };

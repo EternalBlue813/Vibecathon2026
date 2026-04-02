@@ -3,6 +3,7 @@ const CONFIG_URL = '/api/config';
 const INTERVALS_URL = '/api/config/intervals';
 const HEADLINE_URL = '/api/headline';
 const CHAT_URL = '/api/chat';
+const CHAT_RESPONSE_FORMAT = 'markdown';
 let POLL_INTERVAL = 120000;
 let HEADLINE_INTERVAL = 120000;
 const ENTITY_CONFIG_CACHE_KEY = 'statussphere:entity-config:v1';
@@ -264,7 +265,7 @@ function initAskBar() {
         try {
             const data = await requestChatReply();
 
-            responseEl.textContent = data.reply;
+            setRichTextContent(responseEl, data.reply, data.format);
             responseEl.classList.remove('loading');
 
             if (data.guardrail === 'input_blocked') {
@@ -337,7 +338,7 @@ function initChat() {
         try {
             const data = await requestChatReply();
 
-            typingEl.querySelector('p').textContent = data.reply;
+            setAssistantMessageContent(typingEl, data.reply, data.format);
             typingEl.classList.remove('typing');
 
             if (data.guardrail === 'input_blocked') {
@@ -356,19 +357,175 @@ async function requestChatReply() {
     const res = await fetch(CHAT_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: chatHistory.slice(-10) })
+        body: JSON.stringify({
+            messages: chatHistory.slice(-10),
+            responseFormat: CHAT_RESPONSE_FORMAT,
+        })
     });
     return res.json();
 }
 
-function appendMessage(role, text) {
+function appendMessage(role, text, format = CHAT_RESPONSE_FORMAT) {
     const container = document.getElementById('chat-messages');
     const div = document.createElement('div');
     div.className = `chat-msg ${role}`;
-    div.innerHTML = `<p>${escapeHtml(text)}</p>`;
+    if (role === 'assistant') {
+        setAssistantMessageContent(div, text, format);
+    } else {
+        div.innerHTML = `<p>${escapeHtml(text)}</p>`;
+    }
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
     return div;
+}
+
+function setAssistantMessageContent(container, text, format = CHAT_RESPONSE_FORMAT) {
+    const html = renderRichText(text, format);
+    container.innerHTML = `<div class="msg-rich">${html}</div>`;
+}
+
+function setRichTextContent(container, text, format = CHAT_RESPONSE_FORMAT) {
+    container.innerHTML = renderRichText(text, format);
+}
+
+function renderRichText(text, format = CHAT_RESPONSE_FORMAT) {
+    const content = `${text || ''}`;
+    const preferred = `${format || ''}`.toLowerCase();
+
+    if (preferred === 'html' || looksLikeHtml(content)) {
+        return sanitizeAllowedHtml(content);
+    }
+    return renderMarkdown(content);
+}
+
+function looksLikeHtml(text) {
+    return /<([a-z][a-z0-9-]*)(\s[^>]*)?>/i.test(`${text || ''}`);
+}
+
+function sanitizeAllowedHtml(rawHtml) {
+    const template = document.createElement('template');
+    template.innerHTML = `${rawHtml || ''}`;
+
+    const allowedTags = new Set(['P', 'UL', 'OL', 'LI', 'STRONG', 'EM', 'CODE', 'PRE', 'A', 'BR', 'H3', 'H4', 'BLOCKQUOTE']);
+
+    function isSafeHref(href) {
+        if (!href) return false;
+        const trimmed = href.trim();
+        return /^https:\/\//i.test(trimmed) || /^http:\/\//i.test(trimmed) || /^mailto:/i.test(trimmed);
+    }
+
+    function walk(node) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+            const tag = node.tagName;
+            if (!allowedTags.has(tag)) {
+                const parent = node.parentNode;
+                if (parent) {
+                    while (node.firstChild) {
+                        parent.insertBefore(node.firstChild, node);
+                    }
+                    parent.removeChild(node);
+                }
+                return;
+            }
+
+            const attrs = [...node.attributes];
+            for (const attr of attrs) {
+                if (tag === 'A' && attr.name === 'href') {
+                    if (!isSafeHref(attr.value)) {
+                        node.removeAttribute('href');
+                    }
+                    continue;
+                }
+                node.removeAttribute(attr.name);
+            }
+
+            if (tag === 'A') {
+                node.setAttribute('target', '_blank');
+                node.setAttribute('rel', 'noopener noreferrer');
+            }
+        }
+
+        const children = [...node.childNodes];
+        for (const child of children) {
+            walk(child);
+        }
+    }
+
+    walk(template.content);
+    return template.innerHTML;
+}
+
+function renderMarkdown(markdown) {
+    const text = `${markdown || ''}`.replace(/\r\n/g, '\n').trim();
+    if (!text) return '';
+
+    const lines = text.split('\n');
+    const blocks = [];
+    let i = 0;
+    while (i < lines.length) {
+        const line = lines[i].trimEnd();
+        if (!line.trim()) {
+            i += 1;
+            continue;
+        }
+
+        if (line.startsWith('```')) {
+            const codeLines = [];
+            i += 1;
+            while (i < lines.length && !lines[i].trimStart().startsWith('```')) {
+                codeLines.push(lines[i]);
+                i += 1;
+            }
+            i += 1;
+            blocks.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+            continue;
+        }
+
+        const orderedMatch = line.match(/^\d+\.\s+/);
+        const bulletMatch = line.match(/^[-*]\s+/);
+        if (orderedMatch || bulletMatch) {
+            const ordered = Boolean(orderedMatch);
+            const tag = ordered ? 'ol' : 'ul';
+            const items = [];
+            while (i < lines.length) {
+                const current = lines[i].trim();
+                if (!current) break;
+                const itemMatch = ordered ? current.match(/^\d+\.\s+(.+)$/) : current.match(/^[-*]\s+(.+)$/);
+                if (!itemMatch) break;
+                items.push(`<li>${formatInlineMarkdown(itemMatch[1])}</li>`);
+                i += 1;
+            }
+            blocks.push(`<${tag}>${items.join('')}</${tag}>`);
+            continue;
+        }
+
+        const headingMatch = line.match(/^(#{1,4})\s+(.+)$/);
+        if (headingMatch) {
+            const level = Math.min(4, headingMatch[1].length);
+            blocks.push(`<h${level}>${formatInlineMarkdown(headingMatch[2])}</h${level}>`);
+            i += 1;
+            continue;
+        }
+
+        const paragraphLines = [line.trim()];
+        i += 1;
+        while (i < lines.length && lines[i].trim() && !lines[i].trim().startsWith('```') && !/^(#{1,4})\s+/.test(lines[i].trim()) && !/^[-*]\s+/.test(lines[i].trim()) && !/^\d+\.\s+/.test(lines[i].trim())) {
+            paragraphLines.push(lines[i].trim());
+            i += 1;
+        }
+        blocks.push(`<p>${formatInlineMarkdown(paragraphLines.join(' '))}</p>`);
+    }
+
+    return blocks.join('');
+}
+
+function formatInlineMarkdown(text) {
+    let html = escapeHtml(`${text || ''}`);
+    html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    return html;
 }
 
 function escapeHtml(str) {

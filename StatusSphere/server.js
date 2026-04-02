@@ -553,22 +553,46 @@ function classifyScopedIncidentStatus(incidents, regionImpact, healthScore, comp
             .filter(Boolean)
     ).size;
 
-    if (componentSummary?.total > 0) {
-        const nonOperationalRatio = componentSummary.nonOperational / componentSummary.total;
-        if (nonOperationalRatio >= 0.85 || healthScore <= 0.15) return 'Down';
-        if (affectedScopedLocations > 0 || nonOperationalRatio > 0) return 'Partial';
-    }
+    const affectedRegions = Object.keys(regionImpact).length;
+    const totalRegions = ALL_REGIONS.length;
 
     if (affectedScopedLocations > 0) {
-        const affectedRegions = Object.keys(regionImpact).length;
-        if (healthScore <= 0.1 && affectedRegions >= Math.max(2, ALL_REGIONS.length - 1)) return 'Down';
+        const nonOperationalRatio = componentSummary?.total > 0
+            ? componentSummary.nonOperational / componentSummary.total
+            : 0;
+        const hasNearGlobalRegionalImpact = affectedRegions >= Math.max(2, totalRegions - 1);
+        if (hasNearGlobalRegionalImpact && (nonOperationalRatio >= 0.98 || healthScore <= 0.05)) {
+            return 'Down';
+        }
         return 'Partial';
     }
 
-    const affectedRegions = Object.keys(regionImpact).length;
-    const totalRegions = ALL_REGIONS.length;
+    if (componentSummary?.total > 0) {
+        const nonOperationalRatio = componentSummary.nonOperational / componentSummary.total;
+        if (nonOperationalRatio >= 0.85 || healthScore <= 0.15) return 'Down';
+        if (nonOperationalRatio > 0) return 'Partial';
+    }
+
     if (healthScore <= 0.3 || affectedRegions >= totalRegions - 1) return 'Down';
     return 'Partial';
+}
+
+function shouldForcePartialForLimitedRegions(entityType, status, regionImpact, signalText) {
+    if (status !== 'Down') return false;
+    if (entityType !== 'cloud' && entityType !== 'cdn') return false;
+
+    const affectedRegions = Object.keys(regionImpact || {}).length;
+    if (affectedRegions === 0 || affectedRegions > 2) return false;
+
+    const normalized = `${signalText || ''}`.toLowerCase().replace(/\s+/g, ' ');
+    if (!normalized) return true;
+
+    return normalized.includes('one or more regions affected')
+        || normalized.includes('specific regions')
+        || normalized.includes('not a platform-wide disruption')
+        || normalized.includes('not platform-wide')
+        || normalized.includes('not a platform wide disruption')
+        || normalized.includes('not all regions');
 }
 
 /**
@@ -1366,8 +1390,12 @@ async function fetchEntityStatus(entity) {
             const mapped = mapIssueTypeToStatus(issueType);
             const healthScore = issueType === 'full' ? 0.15 : 0.5;
             const regionMeta = resolveCloudRegionMetadata(signalText);
+            const regionImpact = computeRegionImpact([{ region: regionMeta.regionCode }]);
+            const status = shouldForcePartialForLimitedRegions(type, mapped, regionImpact, signalText)
+                ? 'Partial'
+                : mapped;
             return {
-                status: mapped,
+                status,
                 healthScore,
                 incidents: [{
                     name: cleanSummary,
@@ -1375,7 +1403,7 @@ async function fetchEntityStatus(entity) {
                     region: regionMeta.regionCode,
                     awsLocation: regionMeta.location || undefined
                 }],
-                regionImpact: computeRegionImpact([{ region: regionMeta.regionCode }])
+                regionImpact
             };
         }
 
@@ -1429,8 +1457,12 @@ async function fetchEntityStatus(entity) {
 
     const regionImpact = computeRegionImpact(incidents);
 
-    if ((type === 'cloud' || type === 'cdn') && status !== 'Maintenance' && incidents.some((incident) => incident.awsLocation || incident.region)) {
+    if (status !== 'Maintenance' && incidents.some((incident) => incident.awsLocation || incident.region)) {
         status = classifyScopedIncidentStatus(incidents, regionImpact, healthScore, structuredResult?.componentSummary || null);
+    }
+
+    if (shouldForcePartialForLimitedRegions(type, status, regionImpact, signalText)) {
+        status = 'Partial';
     }
 
     if (statusSource.kind === 'aws_public_health' && structuredResult?.componentSummary) {
@@ -1715,7 +1747,7 @@ async function detectIssueWithLLM(entityName, signalText, options = {}) {
         verdict = await callLLM([
             {
                 role: 'system',
-                content: `You are a service reliability classifier. You MUST output ONLY JSON with keys: status ("Healthy"|"Warning"|"Partial"|"Maintenance"|"Down"|"Unknown"), healthScore (0..1), hasIssue (boolean), summary (string <= 180 chars), severity (0..1), type ("partial"|"full"|"maintenance"|"none"). Use the provided structured baseline and text evidence together. If incidentCount > 0 in structured baseline, avoid "Healthy" unless incidents are clearly non-active. Keep healthScore high for healthy states, low for down states, and moderate for warning/partial/maintenance.${bankClassifierRules}`
+                content: `You are a service reliability classifier. You MUST output ONLY JSON with keys: status ("Healthy"|"Warning"|"Partial"|"Maintenance"|"Down"|"Unknown"), healthScore (0..1), hasIssue (boolean), summary (string <= 180 chars), severity (0..1), type ("partial"|"full"|"maintenance"|"none"). Use the provided structured baseline and text evidence together. If incidentCount > 0 in structured baseline, avoid "Healthy" unless incidents are clearly non-active. Keep healthScore high for healthy states, low for down states, and moderate for warning/partial/maintenance. If evidence says one/some/specific regions are affected, or explicitly says it is not platform-wide, classify as Partial (not Down) unless nearly all regions are impacted.${bankClassifierRules}`
             },
             {
                 role: 'user',
@@ -1961,14 +1993,7 @@ async function updateStatus() {
     const analysisByProvider = {};
 
     for (const entity of entities) {
-        let screenshotMeta = screenshotter.getMeta(entity.slug);
-        if (!screenshotMeta) {
-            screenshotMeta = await screenshotter.captureScreenshot(
-                entity.slug,
-                entity.status_page_url || entity.url,
-                entity.url || null
-            );
-        }
+        const screenshotMeta = screenshotter.getMeta(entity.slug);
         const result = await fetchEntityStatus(entity);
         statusData[entity.slug] = result;
         analysisByProvider[entity.slug] = buildSnapshotAnalysis(result, screenshotMeta);
@@ -2221,8 +2246,17 @@ app.get('/api/screenshot/:entity/rendered-text', (req, res) => {
     res.json({ available: true, ...rendered });
 });
 
-app.get('/api/screenshot/:entity/history', (req, res) => {
+app.get('/api/screenshot/:entity/history', async (req, res) => {
     const slug = req.params.entity;
+    const cfg = ENTITY_CONFIG[slug];
+    if (cfg) {
+        try {
+            await screenshotter.captureIfStale(slug, cfg.statusUrl || cfg.url, cfg.url || null);
+        } catch (e) {
+            console.warn(`[Screenshot] On-demand capture failed for ${slug}: ${e.message}`);
+        }
+    }
+
     const memoryHistory = screenshotter.getHistory(slug);
     if (!supabase) {
         return res.json({ snapshots: memoryHistory.slice(-5) });
@@ -2328,6 +2362,8 @@ function buildFallbackHeadline() {
 
 app.post('/api/chat', async (req, res) => {
     const { messages } = req.body;
+    const requestedFormat = `${req.body?.responseFormat || 'markdown'}`.toLowerCase();
+    const responseFormat = requestedFormat === 'html' ? 'html' : 'markdown';
 
     if (!Array.isArray(messages) || messages.length === 0) {
         return res.status(400).json({ error: 'messages array required' });
@@ -2336,7 +2372,8 @@ app.post('/api/chat', async (req, res) => {
     if (!LLM_API_KEY) {
         return res.json({
             reply: 'AI chat is not configured. Please set LLM_API_KEY in your .env file.',
-            guardrail: null
+            guardrail: null,
+            format: responseFormat
         });
     }
 
@@ -2344,15 +2381,19 @@ app.post('/api/chat', async (req, res) => {
 
     const guard = await inputGuardrail(userMessage);
     if (!guard.allowed) {
-        return res.json({ reply: guard.reason, guardrail: 'input_blocked' });
+        return res.json({ reply: guard.reason, guardrail: 'input_blocked', format: responseFormat });
     }
 
     const statusCtx = buildStatusContext();
     const dbCtx = await getDbContext();
     const contextBlock = `\n\nCURRENT STATUS DATA:\n${statusCtx}${dbCtx}`;
+    const formatInstruction = responseFormat === 'html'
+        ? 'Formatting requirement: respond in clean HTML suitable for rendering in a chat bubble. Allowed tags: p, ul, ol, li, strong, em, code, pre, a, br, h3, h4, blockquote. Do not include <html>, <head>, <body>, scripts, styles, or inline event handlers.'
+        : 'Formatting requirement: respond in clean Markdown for chat rendering. Prefer short headings, bullets, and concise paragraphs. Do not use raw HTML.';
 
     const llmMessages = [
         { role: 'system', content: SYSTEM_PROMPT + contextBlock },
+        { role: 'system', content: formatInstruction },
         ...messages.slice(-10),
     ];
 
@@ -2366,11 +2407,12 @@ app.post('/api/chat', async (req, res) => {
     if (!reply) {
         return res.json({
             reply: 'StatusSphere is temporarily unable to generate a response. Please try again later.',
-            guardrail: null
+            guardrail: null,
+            format: responseFormat
         });
     }
 
-    res.json({ reply, guardrail: null });
+    res.json({ reply, guardrail: null, format: responseFormat });
 });
 
 app.listen(PORT, async () => {
