@@ -571,6 +571,24 @@ function classifyScopedIncidentStatus(incidents, regionImpact, healthScore, comp
     return 'Partial';
 }
 
+/**
+ * AWS publishes tens of thousands of services in the public catalog. A few impacted
+ * services otherwise yields healthScore ≈ 1, which the detail graph colors as "Healthy"
+ * (>= 0.9). Map classified status to the same score bands the chart expects.
+ */
+function awsPublicHealthScoreForGraph(status, rawHealthScore, componentSummary) {
+    const raw = clamp01(rawHealthScore);
+    if (status === 'Healthy') return 1;
+    if (status === 'Down') return Math.min(raw, 0.18);
+    if (status === 'Maintenance') return Math.min(raw, 0.35);
+    if (status === 'Partial' || status === 'Warning') {
+        const nonOp = componentSummary?.nonOperational ?? 0;
+        if (nonOp <= 0) return Math.min(raw, 0.68);
+        return clamp01(0.42 + Math.min(0.28, nonOp * 0.05));
+    }
+    return raw;
+}
+
 function getRegion(text) {
     const aws = matchAwsRegionInText(text);
     if (aws) return aws.region;
@@ -780,7 +798,8 @@ async function fetchAwsPublicStatus(entity) {
             nonOperational,
         };
         const status = classifyScopedIncidentStatus(incidents, regionImpact, healthScore, componentSummary);
-        const structuredResult = { status, healthScore, incidents, regionImpact, componentSummary };
+        const displayHealthScore = awsPublicHealthScoreForGraph(status, healthScore, componentSummary);
+        const structuredResult = { status, healthScore: displayHealthScore, incidents, regionImpact, componentSummary };
 
         return {
             structuredResult,
@@ -1321,6 +1340,9 @@ async function fetchEntityStatus(entity) {
                 st = classifyScopedIncidentStatus(inc, ri, hs, structuredResult?.componentSummary || null);
             }
             const response = { status: st, healthScore: hs, incidents: inc, regionImpact: ri };
+            if (statusSource.kind === 'aws_public_health' && structuredResult?.componentSummary) {
+                response.healthScore = awsPublicHealthScoreForGraph(st, hs, structuredResult.componentSummary);
+            }
             if (st === 'Maintenance') {
                 response.maintenanceInfo = {
                     summary: inc[0]?.name || 'Maintenance in progress',
@@ -1409,6 +1431,10 @@ async function fetchEntityStatus(entity) {
 
     if ((type === 'cloud' || type === 'cdn') && status !== 'Maintenance' && incidents.some((incident) => incident.awsLocation || incident.region)) {
         status = classifyScopedIncidentStatus(incidents, regionImpact, healthScore, structuredResult?.componentSummary || null);
+    }
+
+    if (statusSource.kind === 'aws_public_health' && structuredResult?.componentSummary) {
+        healthScore = awsPublicHealthScoreForGraph(status, healthScore, structuredResult.componentSummary);
     }
 
     const response = {
