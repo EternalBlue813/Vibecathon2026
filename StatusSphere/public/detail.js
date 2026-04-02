@@ -147,7 +147,7 @@ function formatTimestamp(isoString) {
 }
 
 function scoreToColor(v) {
-    if (v >= 0.9) return '#22c55e';
+    if (v > 0.9) return '#22c55e';
     if (v >= 0.3) return '#f59e0b';
     return '#ef4444';
 }
@@ -191,7 +191,7 @@ function initChart() {
                     callbacks: {
                         label(ctx) {
                             const v = ctx.parsed.y;
-                            if (v >= 0.9) return 'Healthy';
+                            if (v > 0.9) return 'Healthy';
                             if (v >= 0.3) return 'Intermittent/Partial Outage';
                             return 'Down';
                         }
