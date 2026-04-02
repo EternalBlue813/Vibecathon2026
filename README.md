@@ -1,90 +1,111 @@
 # StatusSphere
 
-Real-time cloud infrastructure status monitoring dashboard.
+Real-time infrastructure status monitoring dashboard. StatusSphere tracks database-driven entities across cloud providers, CDNs, and banks by polling status pages/APIs, classifying issues with an LLM, and surfacing results in a live dashboard.
+
+## What It Does
+
+- Status monitoring with normalized states: `Healthy`, `Warning`, `Partial`, `Down`, `Maintenance`, `Unknown`
+- Live screenshot capture to Supabase Storage (`entity-image-snapshot`)
+- News aggregation from Google News RSS
+- LLM-generated headlines and guarded infrastructure chat
+- DB-first cold-start behavior for config/status/headline endpoints
+- Detail-page fallback to last 5 snapshots/screenshots when memory cache is empty
+- AWS uses its public health data feeds for more accurate current status instead of relying on the page shell alone
+- Entity source strategy is DB-driven, so non-AWS entities remain on the normal generic status-page path by default
+
+See:
+- `StatusSphere/flowchart.md` for trigger/data flow
+- `StatusSphere/database/database.md` for schema details
+- `StatusSphere/instruction.md` for technical behavior and maintenance policy
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org/) (v18 or higher)
-- [Supabase](https://supabase.com/) account
-
-## Project Directory 
-```bash
-cd StatusSphere
-```
+- Node.js v18+
+- Supabase project (database + storage)
 
 ## Setup
 
-### 1. Install Dependencies
+### 1) Install
 
 ```bash
+cd StatusSphere
 npm install
 ```
 
-### 2. Set Up Supabase Database
+### 2) Run Migrations (in order)
 
-1. Go to [Supabase Dashboard](https://supabase.com/dashboard)
-2. Create a new project
-3. Open **SQL Editor** in your Supabase project
-4. Copy and paste the contents of `database/001-initial.sql`
-5. Click **Run**
+| Order | File |
+|---|---|
+| 1 | `database/001-initial.sql` |
+| 2 | `database/002-add-banks.sql` |
+| 3 | `database/003-entities.sql` |
+| 4 | `database/004-fix-provider-constraint.sql` |
+| 5 | `database/005-allow-maintenance-partial-status.sql` |
+| 6 | `database/006-add-snapshot-analysis-columns.sql` |
+| 7 | `database/007-news-dedupe-per-entity.sql` |
+| 8 | `database/008-retention-12h-and-storage-cleanup.sql` |
+| 9 | `database/009-entity-status-source-config.sql` |
 
-### 3. Configure Environment Variables
+### 3) Configure Environment
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and fill in your Supabase credentials:
+Core values from `.env.example`:
 
-```
+```env
 SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SECRET_KEY=your-secret-key-here
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
+PORT=3000
+
+CACHE_DURATION=120000
+NEWS_FETCH_INTERVAL=1800000
+HEADLINE_CACHE_DURATION=120000
+SCREENSHOT_INTERVAL=60000
+ENTITY_REFRESH_INTERVAL=1800000
+
+FRONTEND_STATUS_POLL_INTERVAL=120000
+FRONTEND_HEADLINE_POLL_INTERVAL=120000
+FRONTEND_SCREENSHOT_POLL_INTERVAL=15000
+
+LLM_API_KEY=your-llm-api-key-here
+LLM_MODEL=google/gemini-2.0-flash-001
+LLM_BASE_URL=https://api.groq.com/openai/v1
 ```
 
-Find these values in Supabase: **Settings → API → Project API keys**
+Notes:
+- `SUPABASE_SECRET_KEY` is also supported as a backward-compatible alias.
+- `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` are supported legacy aliases.
+- `STATUS_POLL_INTERVAL` is optional; if unset, server scheduler uses `CACHE_DURATION`.
+- After migration `009`, only `aws` changes behavior automatically; other entities continue to work as before.
 
-### 4. Start the Server
+### 4) Start
 
 ```bash
 npm start
 ```
 
-### 5. Open in Browser
+Open `http://localhost:3000`.
 
-```
-http://localhost:3000
-```
+## Key API Endpoints
 
-## Managing Data
+- `GET /api/config`
+- `GET /api/config/intervals`
+- `GET /status`
+- `POST /api/entities/reload`
+- `GET /api/entity/:entity`
+- `GET /history?entity=<slug>&limit=<n>`
+- `GET /news/:entity`
+- `GET /api/screenshot/:entity/history`
+- `GET /api/headline`
+- `POST /api/chat`
 
-### Stop the Server
+## Documentation Rule
 
-Press `Ctrl + C`
+When backend behavior, env vars, database schema, or API flow changes, update these files together:
 
-### Clear Database
-
-Run this in Supabase SQL Editor:
-
-```sql
-DELETE FROM news_articles;
-DELETE FROM incidents;
-DELETE FROM snapshots;
-```
-
-### Reset Cron Jobs
-
-If cleanup stops working, run in Supabase SQL Editor:
-
-```sql
-SELECT cron.unschedule('cleanup-news-30days');
-SELECT cron.unschedule('cleanup-snapshot-30days');
--- Then re-run from database/001-initial.sql
-```
-
-## Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| `Supabase credentials not found` | Make sure `.env` file exists with valid credentials |
-| Tables not found | Make sure you ran `database/001-initial.sql` |
-| No data showing | Check browser console for errors |
+- `StatusSphere/instruction.md`
+- `StatusSphere/flowchart.md`
+- `StatusSphere/database/database.md`
+- `README.md`

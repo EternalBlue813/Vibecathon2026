@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StatusSphere | Detail</title>
+    <link rel="icon" type="image/png" href="globe-grid.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body>
+    <div class="detail-container">
+        <a href="index.html" class="back-link">&larr; Back to Dashboard</a>
+
+        <div class="detail-header">
+            <h1 id="entity-name">Loading...</h1>
+            <span class="detail-status-badge unknown" id="entity-badge">Unknown</span>
+        </div>
+
+        <section class="detail-section" aria-label="Entity Details">
+            <h2>Entity Details</h2>
+            <div class="entity-links">
+                <p><strong>Main URL:</strong> <a id="entity-main-url" href="#" target="_blank" rel="noopener noreferrer">-</a></p>
+                <p><strong>Status URL:</strong> <a id="entity-status-url" href="#" target="_blank" rel="noopener noreferrer">-</a></p>
+                <p><strong>Last Fetch:</strong> <span id="entity-last-fetch">-</span></p>
+            </div>
+        </section>
+
+        <section class="detail-section" aria-label="AI Summary">
+            <h2>AI Summary</h2>
+            <p class="summary-text" id="llm-summary">
+                No active incidents to summarize. The service appears to be operating normally.
+            </p>
+        </section>
+
+        <section class="detail-section" aria-label="Uptime Chart">
+            <h2>Uptime / Downtime History</h2>
+            <div class="chart-wrapper" id="chart-wrapper">
+                <div class="chart-container">
+                    <canvas id="history-chart"></canvas>
+                </div>
+                <div class="maintenance-overlay" id="maintenance-overlay">
+                    <div class="maintenance-banner">
+                        <span class="maintenance-icon">&#9888;</span>
+                        <span>Under Maintenance</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="detail-section" id="screenshot-section" aria-label="Live Preview of Website">
+            <h2>Live Preview of Website</h2>
+            <div class="screenshot-area" id="screenshot-area">
+                <p class="screenshot-timestamp" id="screenshot-timestamp">Last capture: waiting...</p>
+                <div class="screenshot-carousel">
+                    <button class="carousel-arrow carousel-prev" id="carousel-prev" aria-label="Previous capture" disabled>&lsaquo;</button>
+                    <div class="phone-frame">
+                        <div class="phone-notch"></div>
+                        <img id="screenshot-img" alt="Mobile screenshot of entity website" style="display:none;">
+                        <p class="screenshot-placeholder" id="preview-fallback">Capturing first screenshot...</p>
+                    </div>
+                    <button class="carousel-arrow carousel-next" id="carousel-next" aria-label="Next capture" disabled>&rsaquo;</button>
+                </div>
+                <p class="carousel-counter" id="carousel-counter"></p>
+            </div>
+        </section>
+
+        <section class="detail-section" aria-label="News Feed">
+            <h2>Media Reports</h2>
+            <ul class="news-list" id="news-list">
+                <li class="no-news">Fetching news...</li>
+            </ul>
+        </section>
+    </div>
+    <script src="detail.js"></script>
+</body>
+
+</html>
