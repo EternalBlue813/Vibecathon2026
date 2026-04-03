@@ -159,6 +159,10 @@ const LLM_API_KEY = process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY ||
 const LLM_MODEL = process.env.LLM_MODEL || process.env.OPENROUTER_MODEL || 'google/gemini-2.0-flash-001';
 const LLM_BASE_URL = process.env.LLM_BASE_URL || 'https://openrouter.ai/api/v1';
 
+const TELEGRAM_BOT_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+const TELEGRAM_CHAT_ID = (process.env.TELEGRAM_CHAT_ID || '').trim();
+const TELEGRAM_MESSAGE_THREAD_ID_RAW = (process.env.TELEGRAM_MESSAGE_THREAD_ID || '').trim();
+
 async function callLLM(messages, maxTokens = 512) {
     if (!LLM_API_KEY) {
         return null;
@@ -241,6 +245,90 @@ Reply with ONLY "yes" or "no".`
 
 function getCurrentStatusData() {
     return JSON.parse(JSON.stringify(cache.data));
+}
+
+function isTelegramEnvPlaceholder(value) {
+    if (!value) return true;
+    const v = value.toLowerCase();
+    return v.startsWith('your-') || v.includes('placeholder');
+}
+
+function isTelegramBankAlertsConfigured() {
+    return Boolean(
+        TELEGRAM_BOT_TOKEN
+        && TELEGRAM_CHAT_ID
+        && !isTelegramEnvPlaceholder(TELEGRAM_BOT_TOKEN)
+        && !isTelegramEnvPlaceholder(TELEGRAM_CHAT_ID)
+    );
+}
+
+/** Partial or full service disruption (not planned maintenance). */
+function isBankOutageStatus(status) {
+    return status === 'Partial' || status === 'Warning' || status === 'Down';
+}
+
+/** Prior state that can transition to Healthy with a recovery notice (outage or scheduled work). */
+function isBankPriorDisruptedStatus(status) {
+    return isBankOutageStatus(status) || status === 'Maintenance';
+}
+
+async function sendTelegramMessage(text) {
+    if (!isTelegramBankAlertsConfigured()) return;
+
+    const payload = {
+        chat_id: TELEGRAM_CHAT_ID,
+        text: text.slice(0, 4096),
+        disable_web_page_preview: true,
+    };
+    const parsedThread = parseInt(TELEGRAM_MESSAGE_THREAD_ID_RAW, 10);
+    if (TELEGRAM_MESSAGE_THREAD_ID_RAW && Number.isFinite(parsedThread)) {
+        payload.message_thread_id = parsedThread;
+    }
+
+    try {
+        await axios.post(
+            `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+            payload,
+            { timeout: 15000 }
+        );
+    } catch (e) {
+        const detail = e.response?.data ? JSON.stringify(e.response.data) : e.message;
+        console.error('[Telegram] sendMessage failed:', detail);
+    }
+}
+
+async function sendTelegramBankOutageAlert(slug, providerData, analysis) {
+    const name = ENTITY_CONFIG[slug]?.name || slug;
+    const status = providerData?.status || 'Unknown';
+    const kind = status === 'Down' ? 'Full outage' : 'Partial / degraded outage';
+    const summary = (analysis?.summary || providerData?.incidents?.[0]?.name || '').trim() || 'No summary available.';
+
+    const lines = [
+        'StatusSphere · bank outage',
+        '',
+        `${name} — ${kind}`,
+        `Status: ${status}`,
+        '',
+        summary,
+    ];
+    await sendTelegramMessage(lines.join('\n'));
+}
+
+async function sendTelegramBankRecoveryAlert(slug, providerData, analysis, previousStatus) {
+    const name = ENTITY_CONFIG[slug]?.name || slug;
+    const summary = (analysis?.summary || providerData?.incidents?.[0]?.name || '').trim()
+        || 'Services reported operational; no active incidents in the latest check.';
+
+    const lines = [
+        'StatusSphere · bank recovery',
+        '',
+        `${name} — affected services have recovered and are operational again.`,
+        `Status: Healthy`,
+        `Previous: ${previousStatus}`,
+        '',
+        summary,
+    ];
+    await sendTelegramMessage(lines.join('\n'));
 }
 
 async function loadLatestSnapshotFromDbForSlug(slug) {
@@ -581,8 +669,6 @@ function classifyScopedIncidentStatus(incidents, regionImpact, healthScore, comp
         return 'Partial';
     }
 
-    const affectedRegions = continentKeys.length;
-    const totalRegions = ALL_REGIONS.length;
     // Few continents implicated → partial / regional, not global Down.
     if (affectedRegions > 0 && affectedRegions <= 2 && affectedRegions < totalRegions - 1) {
         return 'Partial';
@@ -2023,6 +2109,10 @@ async function updateStatus() {
     const entities = await refreshEntitiesIfStale();
     synchronizeCacheEntries();
 
+    const previousBankStatus = Object.fromEntries(
+        BANK_SLUGS.map((slug) => [slug, cache.data[slug]?.status ?? 'Unknown'])
+    );
+
     const statusData = {};
     const analysisByProvider = {};
 
@@ -2046,6 +2136,17 @@ async function updateStatus() {
     headlineCache = { text: '', timestamp: 0 };
 
     await persistToDatabase(statusData, analysisByProvider);
+
+    for (const slug of BANK_SLUGS) {
+        const prev = previousBankStatus[slug];
+        const next = statusData[slug]?.status ?? 'Unknown';
+        if (isBankOutageStatus(next) && !isBankOutageStatus(prev)) {
+            await sendTelegramBankOutageAlert(slug, statusData[slug], analysisByProvider[slug]);
+        }
+        if (next === 'Healthy' && isBankPriorDisruptedStatus(prev)) {
+            await sendTelegramBankRecoveryAlert(slug, statusData[slug], analysisByProvider[slug], prev);
+        }
+    }
 
     return cache.data;
 }
@@ -2471,6 +2572,7 @@ app.listen(PORT, async () => {
     }
     console.log(`[StatusSphere] Status polling: every ${STATUS_POLL_INTERVAL / 1000} seconds`);
     console.log(`[StatusSphere] News polling: every ${NEWS_FETCH_INTERVAL / 60000} minutes`);
+    console.log(`[StatusSphere] Telegram bank alerts (outage + recovery): ${isTelegramBankAlertsConfigured() ? 'enabled' : 'not configured'}`);
     screenshotter.startScheduler(() => ENTITY_CONFIG);
     startBackgroundSchedulers();
 

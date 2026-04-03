@@ -1,10 +1,16 @@
 const puppeteer = require('puppeteer');
 const { createClient } = require('@supabase/supabase-js');
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
-const MOBILE_VIEWPORT = { width: 375, height: 812, isMobile: true, hasTouch: true, deviceScaleFactor: 2 };
-const PAGE_TIMEOUT = 20000;
-const SETTLE_MS = 1500;
+/** deviceScaleFactor 2 can spike GPU/RAM on macOS and contribute to Chrome-for-Testing crashes. */
+const MOBILE_VIEWPORT = { width: 375, height: 812, isMobile: true, hasTouch: true, deviceScaleFactor: 1 };
+const PAGE_TIMEOUT = parseInt(process.env.SCREENSHOT_PAGE_TIMEOUT_MS, 10) || 30000;
+const SETTLE_MS = 800;
+const _waitRaw = (process.env.SCREENSHOT_GOTO_WAIT_UNTIL || 'load').trim();
+/** networkidle2 keeps pages “loading” on SPAs / live status sites and stresses the browser; load is enough for screenshots. */
+const GOTO_WAIT_UNTIL = ['load', 'domcontentloaded', 'networkidle0', 'networkidle2'].includes(_waitRaw) ? _waitRaw : 'load';
 const SCREENSHOT_INTERVAL = parseInt(process.env.SCREENSHOT_INTERVAL) || 60 * 1000;
 const MAX_SNAPSHOTS = parseInt(process.env.SCREENSHOT_HISTORY_LIMIT) || 120;
 const SCREENSHOT_SCHEDULER_ENABLED = `${process.env.SCREENSHOT_SCHEDULER_ENABLED || 'false'}`.toLowerCase() === 'true';
@@ -21,56 +27,101 @@ const renderedPageText = {};
 let browser = null;
 let browserLaunchPromise = null;
 
-const CHROME_PATHS = [
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
-    '/Applications/Chromium.app/Contents/MacOS/Chromium',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/chromium',
-];
+const USER_DATA_DIR = path.join(os.tmpdir(), 'statussphere-puppeteer');
 
-function findSystemChrome() {
-    for (const p of CHROME_PATHS) {
-        try { if (fs.existsSync(p)) return p; } catch { }
+function buildStableMacLaunchArgs() {
+    return [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-extensions',
+        '--disable-background-networking',
+        '--disable-sync',
+        '--disable-default-apps',
+        '--mute-audio',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--disable-background-timer-throttling',
+        '--disable-renderer-backgrounding',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-breakpad',
+        '--metrics-recording-only',
+    ];
+}
+
+function resolveHeadlessMode() {
+    const raw = (process.env.PUPPETEER_HEADLESS || 'shell').toLowerCase();
+    if (raw === 'shell' || raw === 'new' || raw === 'true' || raw === 'false') {
+        if (raw === 'true') return true;
+        if (raw === 'false') return false;
+        return raw;
     }
-    return null;
+    return 'shell';
+}
+
+async function resetBrowser() {
+    if (!browser) return;
+    try {
+        browser.removeAllListeners('disconnected');
+    } catch { /* ignore */ }
+    try {
+        if (browser.connected) await browser.close();
+    } catch { /* ignore */ }
+    browser = null;
+}
+
+function attachDisconnectHandler(b) {
+    b.on('disconnected', () => {
+        console.warn('[Screenshot] Browser process exited (will relaunch on next capture)');
+        browser = null;
+    });
 }
 
 async function ensureBrowser() {
     if (browser && browser.connected) return browser;
     if (browserLaunchPromise) return browserLaunchPromise;
 
-    const launchArgs = [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-blink-features=AutomationControlled',
-    ];
+    const launchArgs = buildStableMacLaunchArgs();
+    const headless = resolveHeadlessMode();
 
+    /** Only Puppeteer's downloaded Chromium — no system Chrome/Chromium fallback. */
     browserLaunchPromise = (async () => {
         try {
-            browser = await puppeteer.launch({ headless: 'new', args: launchArgs });
-            console.log('[Screenshot] Launched Puppeteer bundled Chrome');
-            return browser;
-        } catch (e) {
-            console.warn('[Screenshot] Bundled Chrome unavailable, trying system Chrome...');
+            fs.mkdirSync(USER_DATA_DIR, { recursive: true });
+        } catch { /* ignore */ }
+
+        const launchOpts = {
+            headless,
+            args: launchArgs,
+            userDataDir: USER_DATA_DIR,
+        };
+
+        try {
+            browser = await puppeteer.launch(launchOpts);
+        } catch (e1) {
+            if (headless === 'shell') {
+                console.warn('[Screenshot] headless=shell failed, retrying with headless=true:', e1.message);
+                try {
+                    browser = await puppeteer.launch({ ...launchOpts, headless: true });
+                } catch (e2) {
+                    console.error('[Screenshot] Bundled Chromium launch failed:', e2.message);
+                    throw new Error(
+                        'Puppeteer could not launch bundled Chromium. From the StatusSphere directory run: npx puppeteer browsers install chrome'
+                    );
+                }
+            } else {
+                console.error('[Screenshot] Bundled Chromium launch failed:', e1.message);
+                throw new Error(
+                    'Puppeteer could not launch bundled Chromium. From the StatusSphere directory run: npx puppeteer browsers install chrome'
+                );
+            }
         }
 
-        const systemChrome = findSystemChrome();
-        if (systemChrome) {
-            browser = await puppeteer.launch({
-                headless: 'new',
-                executablePath: systemChrome,
-                args: launchArgs,
-            });
-            console.log(`[Screenshot] Launched system Chrome: ${systemChrome}`);
-            return browser;
-        }
-
-        throw new Error('No Chrome/Chromium found. Install Google Chrome or run: npx puppeteer browsers install chrome');
+        attachDisconnectHandler(browser);
+        console.log('[Screenshot] Launched Puppeteer bundled Chromium (headless=%s)', headless);
+        return browser;
     })();
 
     try {
@@ -128,7 +179,7 @@ async function navigateForScreenshot(page, slug, primaryUrl, fallbackUrl) {
     let lastError = null;
     for (const tryUrl of urls) {
         try {
-            await page.goto(tryUrl, { waitUntil: 'networkidle2', timeout: PAGE_TIMEOUT });
+            await page.goto(tryUrl, { waitUntil: GOTO_WAIT_UNTIL, timeout: PAGE_TIMEOUT });
             await new Promise(r => setTimeout(r, SETTLE_MS));
             if (urls.length > 1 && tryUrl !== primaryUrl) {
                 console.log(`[Screenshot] ${slug}: captured using fallback URL`);
@@ -142,7 +193,7 @@ async function navigateForScreenshot(page, slug, primaryUrl, fallbackUrl) {
     throw lastError || new Error('Navigation failed');
 }
 
-async function captureScreenshot(slug, primaryUrl, fallbackUrl) {
+async function captureScreenshot(slug, primaryUrl, fallbackUrl, isRetry = false) {
     if (!primaryUrl) return null;
 
     let page;
@@ -209,7 +260,10 @@ async function captureScreenshot(slug, primaryUrl, fallbackUrl) {
         const objectPath = buildScreenshotPath(slug);
         const publicUrl = await uploadToSupabase(slug, buffer, objectPath);
 
-        if (!publicUrl) return null;
+        if (!publicUrl) {
+            console.warn(`[Screenshot] ${slug}: capture OK but Supabase upload failed — check bucket "${BUCKET}" and credentials`);
+            return null;
+        }
 
         const capturedAt = new Date().toISOString();
         const urlWithBust = `${publicUrl}?t=${Date.now()}`;
@@ -226,7 +280,14 @@ async function captureScreenshot(slug, primaryUrl, fallbackUrl) {
         console.log(`[Screenshot] ${slug}: uploaded ${objectPath} at ${capturedAt}`);
         return { capturedAt, url: urlWithBust };
     } catch (err) {
-        console.error(`[Screenshot] ${slug}: failed -`, err.message);
+        const msg = `${err?.message || err}`;
+        const looksLikeBrowserCrash = /Target closed|Session closed|Protocol error|WebSocket|Browser has disconnected|Connection closed|Navigating frame was detached/i.test(msg);
+        if (looksLikeBrowserCrash && !isRetry) {
+            console.warn(`[Screenshot] ${slug}: browser session lost, resetting and retrying once`);
+            await resetBrowser();
+            return captureScreenshot(slug, primaryUrl, fallbackUrl, true);
+        }
+        console.error(`[Screenshot] ${slug}: failed -`, msg);
         return null;
     } finally {
         if (page) {
@@ -316,10 +377,7 @@ async function shutdown() {
         clearInterval(intervalHandle);
         intervalHandle = null;
     }
-    if (browser) {
-        try { await browser.close(); } catch { }
-        browser = null;
-    }
+    await resetBrowser();
 }
 
 module.exports = { startScheduler, captureScreenshot, captureIfStale, getMeta, getAllMeta, getHistory, getRenderedText, shutdown };
