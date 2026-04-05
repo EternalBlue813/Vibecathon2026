@@ -2550,14 +2550,14 @@ app.post('/api/chat', async (req, res) => {
     res.json({ reply, guardrail: null, format: responseFormat });
 });
 
-app.listen(PORT, async () => {
+app.listen(PORT, '0.0.0.0', async () => {
     setEntities([]);
     initializeCache();
 
     await refreshEntitiesIfStale(true);
     await hydrateCacheFromDatabase();
 
-    console.log(`[StatusSphere] Server running at http://localhost:${PORT}`);
+    console.log(`[StatusSphere] Server running on ${PORT} (0.0.0.0)`);
     console.log(`[StatusSphere] Monitoring: ${ALL_SLUGS.join(', ')}`);
     console.log(`[StatusSphere] LLM: ${LLM_API_KEY ? LLM_MODEL : 'not configured (set LLM_API_KEY, OPENROUTER_API_KEY, or GROQ_API_KEY)'}`);
     if (supabase) {

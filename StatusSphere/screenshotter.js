@@ -86,7 +86,6 @@ async function ensureBrowser() {
     const launchArgs = buildStableMacLaunchArgs();
     const headless = resolveHeadlessMode();
 
-    /** Only Puppeteer's downloaded Chromium — no system Chrome/Chromium fallback. */
     browserLaunchPromise = (async () => {
         try {
             fs.mkdirSync(USER_DATA_DIR, { recursive: true });
@@ -97,6 +96,9 @@ async function ensureBrowser() {
             args: launchArgs,
             userDataDir: USER_DATA_DIR,
         };
+        if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+            launchOpts.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+        }
 
         try {
             browser = await puppeteer.launch(launchOpts);
@@ -120,7 +122,8 @@ async function ensureBrowser() {
         }
 
         attachDisconnectHandler(browser);
-        console.log('[Screenshot] Launched Puppeteer bundled Chromium (headless=%s)', headless);
+        const chromeLabel = process.env.PUPPETEER_EXECUTABLE_PATH || 'bundled Chromium';
+        console.log('[Screenshot] Launched %s (headless=%s)', chromeLabel, headless);
         return browser;
     })();
 
