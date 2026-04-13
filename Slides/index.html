@@ -797,7 +797,136 @@
       }
 
       /* ===========================================
-         SLIDE 4: FUTURE ROADMAP
+         SLIDE 4: VALUE IMPACT
+         =========================================== */
+      .slide-value {
+        background: var(--bg-primary);
+      }
+
+      .slide-value .gradient-mesh {
+        background: radial-gradient(
+          ellipse at 25% 75%,
+          rgba(74, 158, 255, 0.1) 0%,
+          transparent 55%
+        ),
+        radial-gradient(
+          ellipse at 75% 25%,
+          rgba(108, 180, 255, 0.08) 0%,
+          transparent 50%
+        );
+      }
+
+      .value-inner {
+        z-index: 1;
+        display: flex;
+        flex-direction: column;
+        gap: clamp(0.5rem, 1.5vh, 1.25rem);
+        height: 100%;
+        justify-content: center;
+      }
+
+      .value-title {
+        font-size: var(--h2-size);
+        font-weight: 600;
+      }
+
+      .value-scenario {
+        font-size: var(--body-size);
+        color: var(--text-secondary);
+        line-height: 1.5;
+        max-width: 70ch;
+      }
+
+      .value-scenario strong {
+        color: var(--text-primary);
+        font-weight: 600;
+      }
+
+      .value-tables {
+        display: grid;
+        grid-template-columns: 1.2fr 1fr;
+        gap: clamp(0.75rem, 2vw, 1.5rem);
+        align-items: start;
+      }
+
+      @media (max-width: 900px) {
+        .value-tables {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .value-table-block h3 {
+        font-size: var(--h3-size);
+        font-weight: 600;
+        margin-bottom: clamp(0.3rem, 0.8vh, 0.6rem);
+      }
+
+      .value-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: var(--small-size);
+        line-height: 1.4;
+      }
+
+      .value-table th,
+      .value-table td {
+        text-align: left;
+        padding: clamp(0.3rem, 0.6vh, 0.5rem) clamp(0.4rem, 0.8vw, 0.75rem);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      }
+
+      .value-table th {
+        font-family: var(--font-display);
+        font-weight: 600;
+        font-size: var(--label-size);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--accent);
+        border-bottom: 2px solid rgba(74, 158, 255, 0.3);
+        white-space: nowrap;
+      }
+
+      .value-table td {
+        color: var(--text-secondary);
+      }
+
+      .value-table td:first-child {
+        color: var(--text-primary);
+        font-weight: 500;
+        white-space: nowrap;
+      }
+
+      .value-table .col-ss {
+        color: var(--accent);
+        font-weight: 500;
+      }
+
+      .value-table tr:hover td {
+        background: rgba(74, 158, 255, 0.04);
+      }
+
+      .value-callout {
+        margin-top: clamp(0.4rem, 1vh, 0.75rem);
+        padding: clamp(0.6rem, 1.2vw, 1rem) clamp(0.8rem, 1.5vw, 1.25rem);
+        background: rgba(74, 158, 255, 0.08);
+        border-left: 3px solid var(--accent);
+        border-radius: 0 8px 8px 0;
+        font-size: var(--body-size);
+        color: var(--text-primary);
+        line-height: 1.5;
+        font-weight: 500;
+      }
+
+      .value-reduction {
+        display: inline-block;
+        margin-top: clamp(0.15rem, 0.4vh, 0.3rem);
+        font-size: var(--small-size);
+        color: var(--accent);
+        font-weight: 600;
+      }
+
+      /* ===========================================
+         SLIDE 5: FUTURE ROADMAP
          =========================================== */
       .slide-roadmap {
         background: var(--bg-primary);
@@ -1122,7 +1251,109 @@
     </section>
 
     <!-- =============================================
-         SLIDE 4: FUTURE ROADMAP
+         SLIDE 4: VALUE IMPACT
+         ============================================= -->
+    <section class="slide slide-value grid-bg" aria-label="Value impact comparison">
+      <div class="gradient-mesh"></div>
+      <div class="slide-content">
+        <div class="value-inner">
+          <h2 class="value-title reveal">Potential Value Impact</h2>
+          <p class="value-scenario reveal">
+            <strong>Scenario: Major Cloud/CDN Provider Outage</strong> (e.g., AWS, Cloudflare, Azure goes down) —
+            An analyst or ops team needs to determine which downstream banks (DBS, OCBC, UOB, Maybank, HSBC, Citi, SCB, SXP) are impacted.
+          </p>
+
+          <div class="value-tables">
+            <!-- Table 1: Time to Awareness -->
+            <div class="value-table-block reveal">
+              <h3>Time to Awareness</h3>
+              <table class="value-table">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Manual</th>
+                    <th>StatusSphere</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Detection</td>
+                    <td>Wait for alerts/news, or someone notices</td>
+                    <td class="col-ss">Auto-detected within ~2 min (120s polling)</td>
+                  </tr>
+                  <tr>
+                    <td>Scope assessment</td>
+                    <td>Open 8+ bank websites individually, check login portals &amp; status pages</td>
+                    <td class="col-ss">Single dashboard — all 14 entities at a glance</td>
+                  </tr>
+                  <tr>
+                    <td>Regional impact</td>
+                    <td>Cross-reference provider region info with bank infrastructure (if known)</td>
+                    <td class="col-ss">Auto-classified with regionImpact mapping &amp; scoped incident logic</td>
+                  </tr>
+                  <tr>
+                    <td>Estimated time</td>
+                    <td>30–90 minutes to manually verify all banks</td>
+                    <td class="col-ss">&lt; 5 minutes from outage to full picture</td>
+                  </tr>
+                </tbody>
+              </table>
+              <span class="value-reduction reveal">~85–95% reduction in time-to-assess</span>
+            </div>
+
+            <!-- Table 2: Value Dimensions -->
+            <div class="value-table-block reveal">
+              <h3>Overall Impact</h3>
+              <table class="value-table">
+                <thead>
+                  <tr>
+                    <th>Value Dimension</th>
+                    <th>Estimated Impact</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Time to full situational awareness</td>
+                    <td class="col-ss">~90% faster (minutes vs. an hour+)</td>
+                  </tr>
+                  <tr>
+                    <td>Manual effort per incident</td>
+                    <td class="col-ss">~100% reduction (fully automated)</td>
+                  </tr>
+                  <tr>
+                    <td>Coverage consistency</td>
+                    <td class="col-ss">14/14 entities, every cycle vs. best-effort</td>
+                  </tr>
+                  <tr>
+                    <td>Regional misclassification risk</td>
+                    <td class="col-ss">Significantly lower (scoped classification logic)</td>
+                  </tr>
+                  <tr>
+                    <td>Off-hours coverage</td>
+                    <td class="col-ss">24/7 vs. on-call dependent</td>
+                  </tr>
+                  <tr>
+                    <td>Audit/evidence trail</td>
+                    <td class="col-ss">Automatic (snapshots, screenshots, DB persistence)</td>
+                  </tr>
+                  <tr>
+                    <td>Decision quality during crisis</td>
+                    <td class="col-ss">Higher (AI summary, chat, historical trends)</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="value-callout reveal">
+            StatusSphere turns a 1-hour, multi-person fire drill into a 2-minute glance at a dashboard with zero manual effort.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =============================================
+         SLIDE 5: FUTURE ROADMAP
          ============================================= -->
     <section class="slide slide-roadmap grid-bg" aria-label="Future roadmap">
       <div class="gradient-mesh"></div>
@@ -1200,7 +1431,7 @@
     </section>
 
     <!-- =============================================
-         SLIDE 5: THANK YOU
+         SLIDE 6: THANK YOU
          ============================================= -->
     <section class="slide slide-title grid-bg" aria-label="Thank you slide">
       <div class="gradient-mesh"></div>
