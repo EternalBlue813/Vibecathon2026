@@ -832,11 +832,11 @@
 
       .roadmap-body {
         display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: clamp(1rem, 3vw, 3rem);
+        grid-template-columns: 1.5fr 1fr;
+        gap: clamp(1rem, 4vw, 4rem);
         align-items: start;
         width: 100%;
-        max-width: 1200px;
+        max-width: 100%;
       }
 
       @media (max-width: 800px) {
@@ -851,6 +851,8 @@
         flex-direction: column;
         gap: clamp(1rem, 2vh, 2rem);
         width: 100%;
+        margin-left: auto;
+        max-width: 550px;
       }
 
       .roadmap-column {
@@ -920,7 +922,7 @@
       .roadmap-screenshot {
         display: flex;
         flex-direction: column;
-        align-items: center;
+        align-items: flex-start;
         justify-content: center;
         z-index: 1;
         width: 100%;
@@ -928,7 +930,7 @@
 
       .zoom-wrapper {
         width: 100%;
-        max-height: clamp(300px, 60vh, 600px);
+        max-height: clamp(400px, 75vh, 800px);
         border-radius: 12px;
         border: 1px solid rgba(74, 158, 255, 0.15);
         box-shadow: 0 0 40px rgba(74, 158, 255, 0.08), 0 16px 48px rgba(0, 0, 0, 0.4);
@@ -954,7 +956,7 @@
         margin-top: 8px;
         font-size: var(--small-size);
         color: var(--text-secondary);
-        text-align: center;
+        text-align: left;
         font-style: italic;
       }
 
