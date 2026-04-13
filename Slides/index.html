@@ -167,17 +167,7 @@
         }
       }
 
-      @media (prefers-reduced-motion: reduce) {
-        *,
-        *::before,
-        *::after {
-          animation-duration: 0.01ms !important;
-          transition-duration: 0.2s !important;
-        }
-        html {
-          scroll-behavior: auto;
-        }
-      }
+      /* Removed prefers-reduced-motion block to ensure animations play */
 
       /* ===========================================
          GLOBAL STYLES
@@ -327,9 +317,7 @@
         height: 100%;
       }
 
-      @media (prefers-reduced-motion: reduce) {
-        .heartbeat-container { display: none; }
-      }
+      /* Removed prefers-reduced-motion block */
 
       /* ===========================================
          SLIDE 1: TITLE — INTRODUCTION & PROBLEM
@@ -468,6 +456,97 @@
       }
 
       /* ===========================================
+         BLUE FLOW TEXT ANIMATION (SLIDE 1)
+         =========================================== */
+      .blue-flow-text {
+        background: linear-gradient(
+          to right,
+          #4a9eff 0%,
+          #0055ff 25%,
+          #00e5ff 50%,
+          #0055ff 75%,
+          #4a9eff 100%
+        );
+        background-size: 200% auto;
+        background-position: 0% center;
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        animation: blue-flow 4s linear infinite;
+      }
+
+      @keyframes blue-flow {
+        to { background-position: 200% center; }
+      }
+
+      /* ===========================================
+         GLOBE BACKGROUND ANIMATION (SLIDE 1)
+         =========================================== */
+      .globe-bg {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: clamp(300px, 80vh, 800px);
+        height: clamp(300px, 80vh, 800px);
+        z-index: 0;
+        perspective: 1000px;
+        opacity: 0.8;
+        pointer-events: none;
+      }
+
+      .globe-tilt {
+        width: 100%;
+        height: 100%;
+        transform-style: preserve-3d;
+        transform: rotateX(23.5deg) rotateZ(23.5deg); /* Tilted axis */
+      }
+
+      .globe-wireframe {
+        width: 100%;
+        height: 100%;
+        position: relative;
+        transform-style: preserve-3d;
+        animation: globe-spin 60s linear infinite;
+      }
+
+      .globe-ring {
+        position: absolute;
+        width: 100%;
+        height: 100%;
+        border-radius: 50%;
+        border: 2px solid rgba(136, 146, 176, 0.2); /* Faint grey wireframe */
+        box-sizing: border-box;
+        animation: globe-flicker 4s infinite;
+      }
+
+      .globe-ring:nth-child(1) { transform: rotateY(0deg); }
+      .globe-ring:nth-child(2) { transform: rotateY(30deg); animation-delay: 0.2s; }
+      .globe-ring:nth-child(3) { transform: rotateY(60deg); animation-delay: 0.5s; }
+      .globe-ring:nth-child(4) { transform: rotateY(90deg); animation-delay: 0.8s; }
+      .globe-ring:nth-child(5) { transform: rotateY(120deg); animation-delay: 1.1s; }
+      .globe-ring:nth-child(6) { transform: rotateY(150deg); animation-delay: 1.4s; }
+      .globe-ring.equator { transform: rotateX(90deg); animation-delay: 1.7s; }
+      .globe-ring.tropic1 { transform: translateY(-25%) rotateX(90deg) scale(0.866); animation-delay: 2.0s; }
+      .globe-ring.tropic2 { transform: translateY(25%) rotateX(90deg) scale(0.866); animation-delay: 2.3s; }
+
+      @keyframes globe-spin {
+        0% { transform: rotateY(0deg); }
+        100% { transform: rotateY(360deg); }
+      }
+
+      @keyframes globe-flicker {
+        0%, 19.999%, 22%, 62.999%, 64%, 64.999%, 70%, 100% {
+          border-color: rgba(136, 146, 176, 0.2);
+          box-shadow: none;
+        }
+        20%, 21.999%, 63%, 63.999%, 65%, 69.999% {
+          border-color: #fff;
+          box-shadow: 0 0 15px #00e5ff, inset 0 0 15px #00e5ff, 0 0 30px #00e5ff;
+        }
+      }
+
+      /* ===========================================
          SLIDE 2: PROBLEM & SOLUTION
          =========================================== */
       .slide-problem {
@@ -490,7 +569,7 @@
       .split-layout {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: clamp(1.5rem, 3vw, 3rem);
+        gap: clamp(1rem, 2vw, 2rem);
         align-items: start;
         z-index: 1;
       }
@@ -502,6 +581,45 @@
         }
       }
 
+      .problem-visuals {
+        position: relative;
+        margin-top: clamp(1rem, 3vh, 2rem);
+        width: 100%;
+        height: clamp(120px, 25vh, 220px);
+      }
+
+      .problem-visuals img {
+        position: absolute;
+        height: 100%;
+        object-fit: cover;
+        border-radius: 8px;
+        border: 1px solid rgba(248, 113, 113, 0.3);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+        transition: transform 0.3s ease, z-index 0.3s ease;
+      }
+
+      .problem-visuals img:nth-child(1) {
+        width: 65%;
+        left: 0;
+        top: 0;
+        z-index: 1;
+        transform: rotate(-2deg);
+      }
+
+      .problem-visuals img:nth-child(2) {
+        width: 55%;
+        right: 10%;
+        bottom: -15%;
+        z-index: 2;
+        transform: rotate(3deg);
+      }
+
+      .problem-visuals img:hover {
+        z-index: 10;
+        transform: scale(1.05) rotate(0deg);
+        border-color: var(--accent-danger);
+      }
+
       .section-label {
         display: inline-block;
         font-size: var(--label-size);
@@ -511,6 +629,7 @@
         padding-bottom: clamp(0.3rem, 0.5vh, 0.5rem);
         margin-bottom: clamp(0.3rem, 0.5vh, 0.5rem);
         border-bottom: 2px solid;
+        font-family: var(--font-display);
       }
 
       .section-label.problem {
@@ -559,6 +678,7 @@
       .pain-list.solutions li::before {
         content: "\2714";
         color: var(--accent);
+        font-weight: 900;
       }
 
       .target-users {
@@ -574,6 +694,12 @@
 
       .target-users strong {
         color: var(--accent);
+      }
+
+      .solution-panel {
+        display: flex;
+        flex-direction: column;
+        gap: clamp(0.3rem, 0.6vh, 0.5rem);
       }
 
       /* ===========================================
@@ -695,6 +821,8 @@
         display: flex;
         flex-direction: column;
         gap: clamp(1rem, 2.5vh, 2rem);
+        height: 100%;
+        justify-content: center;
       }
 
       .roadmap-title {
@@ -702,75 +830,137 @@
         font-weight: 600;
       }
 
-      .roadmap-grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: clamp(0.75rem, 1.5vw, 1.5rem);
+      .roadmap-body {
+        display: flex;
+        flex-direction: column;
+        gap: clamp(1rem, 2vh, 1.5rem);
+        align-items: center;
+        width: 100%;
       }
 
       @media (max-width: 800px) {
-        .roadmap-grid {
+        .roadmap-screenshot { display: none; }
+      }
+
+      .roadmap-sections {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: clamp(1rem, 3vw, 3rem);
+        width: 100%;
+        max-width: 1100px;
+      }
+
+      @media (max-width: 900px) {
+        .roadmap-sections {
           grid-template-columns: 1fr;
+          gap: 1rem;
         }
       }
 
-      .roadmap-card {
-        background: var(--bg-card);
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        border-radius: 12px;
-        padding: clamp(1rem, 2vw, 1.5rem);
+      .roadmap-column {
         display: flex;
         flex-direction: column;
-        gap: clamp(0.4rem, 0.8vh, 0.75rem);
-        transition: border-color 0.3s ease, box-shadow 0.3s ease;
-        position: relative;
-        overflow: hidden;
+        gap: clamp(0.4rem, 0.8vh, 0.6rem);
       }
 
-      .roadmap-card::before {
-        content: "";
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: 3px;
-        border-radius: 12px 12px 0 0;
-      }
-
-      .roadmap-card:nth-child(1)::before { background: var(--accent); }
-      .roadmap-card:nth-child(2)::before { background: var(--accent-secondary); }
-      .roadmap-card:nth-child(3)::before { background: var(--accent-warn); }
-
-      .roadmap-card:hover {
-        border-color: rgba(255, 255, 255, 0.12);
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-      }
-
-      .roadmap-phase {
+      .column-header {
+        display: inline-block;
         font-size: var(--label-size);
         font-weight: 700;
-        letter-spacing: 0.12em;
+        letter-spacing: 0.15em;
         text-transform: uppercase;
+        color: var(--accent);
+        padding-bottom: clamp(0.3rem, 0.5vh, 0.5rem);
+        margin-bottom: clamp(0.3rem, 0.5vh, 0.5rem);
+        border-bottom: 2px solid rgba(74, 158, 255, 0.3);
+        font-family: var(--font-display);
       }
 
-      .roadmap-card:nth-child(1) .roadmap-phase { color: var(--accent); }
-      .roadmap-card:nth-child(2) .roadmap-phase { color: var(--accent-secondary); }
-      .roadmap-card:nth-child(3) .roadmap-phase { color: var(--accent-warn); }
+      .roadmap-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: clamp(0.4rem, 0.8vh, 0.6rem);
+      }
 
-      .roadmap-card h3 {
-        font-size: var(--h3-size);
+      .roadmap-column .roadmap-list {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .roadmap-item {
+        background: var(--bg-card);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 8px;
+        padding: clamp(0.4rem, 0.8vw, 0.6rem);
+        display: flex;
+        align-items: flex-start;
+        gap: clamp(0.4rem, 0.6vw, 0.6rem);
+        transition: border-color 0.3s ease, box-shadow 0.3s ease;
+      }
+
+      .roadmap-item:hover {
+        border-color: rgba(74, 158, 255, 0.2);
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+      }
+
+      .roadmap-item-icon {
+        font-size: clamp(1rem, 1.5vw, 1.3rem);
+        flex-shrink: 0;
+        line-height: 1.3;
+      }
+
+      .roadmap-item-text h3 {
+        font-size: clamp(0.8rem, 1.1vw, 1rem);
         font-weight: 600;
+        margin-bottom: 1px;
       }
 
-      .roadmap-card p {
-        font-size: var(--body-size);
+      .roadmap-item-text p {
+        font-size: clamp(0.65rem, 0.9vw, 0.85rem);
         color: var(--text-secondary);
-        line-height: 1.5;
+        line-height: 1.3;
       }
 
-      .roadmap-icon {
-        font-size: clamp(1.5rem, 2.5vw, 2rem);
-        margin-bottom: clamp(0.1rem, 0.3vh, 0.25rem);
+      .roadmap-screenshot {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 1;
+        width: 100%;
+        max-width: 600px;
+      }
+
+      .zoom-wrapper {
+        width: 100%;
+        max-height: clamp(180px, 35vh, 320px);
+        border-radius: 12px;
+        border: 1px solid rgba(74, 158, 255, 0.15);
+        box-shadow: 0 0 40px rgba(74, 158, 255, 0.08), 0 16px 48px rgba(0, 0, 0, 0.4);
+        overflow: hidden;
+        cursor: zoom-in;
+        display: flex;
+        background: var(--bg-secondary);
+      }
+
+      .zoom-wrapper img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        transition: transform 0.15s ease-out;
+        transform-origin: center center;
+      }
+
+      .zoom-wrapper:hover img {
+        transform: scale(2.5);
+      }
+
+      .roadmap-caption {
+        margin-top: 8px;
+        font-size: var(--small-size);
+        color: var(--text-secondary);
+        text-align: center;
+        font-style: italic;
       }
 
       /* ===========================================
@@ -823,6 +1013,23 @@
     <section class="slide slide-title grid-bg" aria-label="Title slide">
       <div class="gradient-mesh"></div>
 
+      <!-- Globe Wireframe Background -->
+      <div class="globe-bg" aria-hidden="true">
+        <div class="globe-tilt">
+          <div class="globe-wireframe">
+            <div class="globe-ring"></div>
+            <div class="globe-ring"></div>
+            <div class="globe-ring"></div>
+            <div class="globe-ring"></div>
+            <div class="globe-ring"></div>
+            <div class="globe-ring"></div>
+            <div class="globe-ring equator"></div>
+            <div class="globe-ring tropic1"></div>
+            <div class="globe-ring tropic2"></div>
+          </div>
+        </div>
+      </div>
+
       <!-- Heartbeat Pulse Animation -->
       <div class="heartbeat-container" aria-hidden="true">
         <canvas id="heartbeatCanvas"></canvas>
@@ -832,7 +1039,7 @@
         <div class="title-split">
           <div class="title-inner">
             <div class="badge reveal">Outage Monitoring</div>
-            <h1 class="title-main reveal">StatusSphere</h1>
+            <h1 class="title-main blue-flow-text reveal">StatusSphere</h1>
             <p class="title-tagline reveal">
               Consolidated visibility into service outages across major
               financial institutions and cloud service providers.
@@ -862,24 +1069,33 @@
             <h2 class="panel-title">Fragmented Manual Monitoring</h2>
             <ul class="pain-list problems">
               <li>Supervisors check individual bank websites every minute during incidents</li>
-              <li>No centralized dashboard for 1-2 monthly outage incidents</li>
+              <li>No centralized dashboard for outage incidents</li>
+              <li>Community-driven sites such as downdetector do not offer information on bank outage banners and a dashboard with preferred entities grouped together</li>
               <li>Cannot quickly determine which banks are affected during CSP outages</li>
               <li>Delayed situational awareness hampers regulatory response</li>
             </ul>
-            <div class="target-users">
-              <strong>Users:</strong> TCRD &amp; FSG officers (primary), TG &amp; Senior Management (situational awareness)
+            <div class="problem-visuals reveal-scale">
+              <img src="assets/cloudflare-status.png" alt="Cloudflare status page example" />
+              <img src="assets/dbs-outage-chart.png" alt="DBS outage chart" />
             </div>
           </div>
 
           <!-- Solution Panel -->
-          <div class="reveal">
+          <div class="reveal solution-panel">
             <span class="section-label solution">The Solution</span>
             <h2 class="panel-title">StatusSphere Dashboard</h2>
             <ul class="pain-list solutions">
               <li>Automated aggregation of service status from multiple banks</li>
-              <li>Real-time outage information, recovery progress, and news</li>
-              <li>Faster and more accurate outage detection</li>
+              <li>Real-time outage screenshots including web banner information and recovery progress</li>
+              <li>Related news coverage included for comprehensive context</li>
+              <li>LLM enabled to collate and summarize unstructured information, provide answers to questions</li>
               <li>Consolidated situational awareness in a single interface</li>
+            </ul>
+            <div style="margin-top: clamp(0.5rem, 1.5vh, 1rem);"></div>
+            <span class="section-label solution">Target Users</span>
+            <ul class="pain-list solutions">
+              <li>Primarily for TCRD &amp; FSG officers' supervisory work</li>
+              <li>TG &amp; Senior Management for situation awareness</li>
             </ul>
           </div>
         </div>
@@ -916,35 +1132,87 @@
       <div class="slide-content">
         <div class="roadmap-inner">
           <h2 class="roadmap-title reveal">Future Roadmap</h2>
-          <div class="roadmap-grid">
-            <div class="roadmap-card reveal">
-              <div class="roadmap-icon">&#x1F310;</div>
-              <span class="roadmap-phase">Phase 1</span>
-              <h3>Expanded Coverage</h3>
-              <p>
-                Include more Financial Institutions and critical service
-                providers for broader sector-wide visibility.
-              </p>
+          <div class="roadmap-body">
+            <div class="roadmap-screenshot reveal-scale">
+              <div class="zoom-wrapper" id="zoomWrapper">
+                <img src="assets/telegram-screenshot.png" alt="Telegram bot alerting during SXP Bank partial outage with live screenshot preview" id="zoomImg" />
+              </div>
+              <p class="roadmap-caption">Telegram bot prototype — real-time outage alerts</p>
             </div>
-            <div class="roadmap-card reveal">
-              <div class="roadmap-icon">&#x1F514;</div>
-              <span class="roadmap-phase">Phase 2</span>
-              <h3>Automated Alerting</h3>
-              <p>
-                Real-time reporting and notifications via Telegram, WhatsApp,
-                and other messaging channels.
-              </p>
-            </div>
-            <div class="roadmap-card reveal">
-              <div class="roadmap-icon">&#x1F4CA;</div>
-              <span class="roadmap-phase">Phase 3</span>
-              <h3>Trend Analytics</h3>
-              <p>
-                Historical outage trends, performance analytics, and
-                predictive insights for proactive supervision.
-              </p>
+
+            <div class="roadmap-sections">
+              <!-- Functional Column -->
+              <div class="roadmap-column">
+                <div class="column-header reveal">Functional</div>
+                <div class="roadmap-list">
+                  <div class="roadmap-item reveal">
+                    <div class="roadmap-item-icon">&#x1F514;</div>
+                    <div class="roadmap-item-text">
+                      <h3>Automated Alerting</h3>
+                      <p>Real-time reporting and notifications via Telegram.</p>
+                    </div>
+                  </div>
+                  <div class="roadmap-item reveal">
+                    <div class="roadmap-item-icon">&#x1F310;</div>
+                    <div class="roadmap-item-text">
+                      <h3>Expanded Coverage</h3>
+                      <p>Include more Financial Institutions and critical service providers. Exploration of additional information feeds.</p>
+                    </div>
+                  </div>
+                  <div class="roadmap-item reveal">
+                    <div class="roadmap-item-icon">&#x1F4CA;</div>
+                    <div class="roadmap-item-text">
+                      <h3>Trend Analytics</h3>
+                      <p>Historical outage trends and predictive insights for proactive supervision.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Non-Functional Column -->
+              <div class="roadmap-column">
+                <div class="column-header reveal">Non-Functional</div>
+                <div class="roadmap-list">
+                  <div class="roadmap-item reveal">
+                    <div class="roadmap-item-icon">🛡️</div>
+                    <div class="roadmap-item-text">
+                      <h3>Secure Infrastructure</h3>
+                      <p>Hosting in WOG/MAS with WAF and undergo security assessments.</p>
+                    </div>
+                  </div>
+                  <div class="roadmap-item reveal">
+                    <div class="roadmap-item-icon">⚡</div>
+                    <div class="roadmap-item-text">
+                      <h3>Performance & Availability</h3>
+                      <p>Highly responsive UI with optimized polling and multi-zone deployment for uptime.</p>
+                    </div>
+                  </div>
+                  <div class="roadmap-item reveal">
+                    <div class="roadmap-item-icon">🤖</div>
+                    <div class="roadmap-item-text">
+                      <h3>Approved Integrations</h3>
+                      <p>Integration with stable, approved LLM services and compliant database infrastructure.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =============================================
+         SLIDE 5: THANK YOU
+         ============================================= -->
+    <section class="slide slide-title grid-bg" aria-label="Thank you slide">
+      <div class="gradient-mesh"></div>
+      <div class="slide-content">
+        <div class="title-inner" style="align-items: center; text-align: center; width: 100%;">
+          <h1 class="title-main reveal" style="max-width: none; font-size: clamp(3rem, 8vw, 6rem);">Thank You!</h1>
+          <p class="title-tagline reveal" style="font-size: clamp(1.2rem, 3vw, 1.8rem); max-width: none; margin-top: 1rem;">
+            This deck was vibe-coded too!
+          </p>
         </div>
       </div>
     </section>
@@ -1093,11 +1361,28 @@
       const presentation = new SlidePresentation();
 
       /* ===========================================
+         AMAZON-STYLE IMAGE ZOOM
+         =========================================== */
+      const zoomWrapper = document.getElementById('zoomWrapper');
+      const zoomImg = document.getElementById('zoomImg');
+      if (zoomWrapper && zoomImg) {
+        zoomWrapper.addEventListener('mousemove', (e) => {
+          const rect = zoomWrapper.getBoundingClientRect();
+          const x = ((e.clientX - rect.left) / rect.width) * 100;
+          const y = ((e.clientY - rect.top) / rect.height) * 100;
+          zoomImg.style.transformOrigin = `${x}% ${y}%`;
+        });
+        zoomWrapper.addEventListener('mouseleave', () => {
+          zoomImg.style.transformOrigin = 'center center';
+        });
+      }
+
+      /* ===========================================
          HEARTBEAT CANVAS ANIMATION
          =========================================== */
       (function () {
         const canvas = document.getElementById("heartbeatCanvas");
-        if (!canvas || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+        if (!canvas) return;
         const ctx = canvas.getContext("2d");
 
         function resize() {

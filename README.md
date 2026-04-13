@@ -88,6 +88,17 @@ npm start
 
 Open `http://localhost:3000`.
 
+## Presentation Slides
+
+The project includes an interactive HTML presentation deck located in the `Slides/` directory. It is designed to be hosted on Vercel and features:
+- Project overview and problem statement
+- Solution and target users
+- Demo video integration
+- Future roadmap
+- Custom CSS animations and interactive elements
+
+To view the slides locally, open `Slides/index.html` in your browser.
+
 ## Key API Endpoints
 
 - `GET /api/config`
