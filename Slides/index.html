@@ -1,0 +1,1215 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>StatusSphere — Consolidated Regulatory Monitoring Dashboard</title>
+
+    <!-- Fonts: Clash Display + Satoshi from Fontshare -->
+    <link
+      rel="stylesheet"
+      href="https://api.fontshare.com/v2/css?f[]=clash-display@400;500;600;700&f[]=satoshi@400;500;700&display=swap"
+    />
+
+    <style>
+      /* ===========================================
+         CSS CUSTOM PROPERTIES (THEME)
+         Blue & White — clean, professional, trustworthy
+         =========================================== */
+      :root {
+        --bg-primary: #070d1f;
+        --bg-secondary: #0f1a33;
+        --bg-card: rgba(15, 26, 51, 0.7);
+        --text-primary: #f0f4ff;
+        --text-secondary: #94a3c8;
+        --accent: #4a9eff;
+        --accent-glow: rgba(74, 158, 255, 0.25);
+        --accent-secondary: #6cb4ff;
+        --accent-warn: #60a5fa;
+        --accent-danger: #f87171;
+
+        --font-display: "Clash Display", sans-serif;
+        --font-body: "Satoshi", sans-serif;
+        --title-size: clamp(2rem, 5.5vw, 4.5rem);
+        --h2-size: clamp(1.25rem, 3.5vw, 2.5rem);
+        --h3-size: clamp(1rem, 2.5vw, 1.5rem);
+        --subtitle-size: clamp(0.875rem, 2vw, 1.25rem);
+        --body-size: clamp(0.75rem, 1.4vw, 1.05rem);
+        --small-size: clamp(0.65rem, 1vw, 0.875rem);
+        --label-size: clamp(0.55rem, 0.8vw, 0.75rem);
+
+        --slide-padding: clamp(1.5rem, 4vw, 4rem);
+        --content-gap: clamp(0.75rem, 2vw, 2rem);
+        --element-gap: clamp(0.25rem, 1vw, 1rem);
+
+        --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+        --duration-normal: 0.6s;
+      }
+
+      /* ===========================================
+         BASE RESET
+         =========================================== */
+      *,
+      *::before,
+      *::after {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      /* ===========================================
+         VIEWPORT FITTING: MANDATORY BASE STYLES
+         =========================================== */
+      html,
+      body {
+        height: 100%;
+        overflow-x: hidden;
+      }
+
+      html {
+        scroll-snap-type: y mandatory;
+        scroll-behavior: smooth;
+      }
+
+      .slide {
+        width: 100vw;
+        height: 100vh;
+        height: 100dvh;
+        overflow: hidden;
+        scroll-snap-align: start;
+        display: flex;
+        flex-direction: column;
+        position: relative;
+      }
+
+      .slide-content {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        max-height: 100%;
+        overflow: hidden;
+        padding: var(--slide-padding);
+      }
+
+      .card,
+      .container,
+      .content-box {
+        max-width: min(90vw, 1000px);
+        max-height: min(80vh, 700px);
+      }
+
+      .feature-list,
+      .bullet-list {
+        gap: clamp(0.4rem, 1vh, 1rem);
+      }
+
+      .feature-list li,
+      .bullet-list li {
+        font-size: var(--body-size);
+        line-height: 1.4;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(
+          auto-fit,
+          minmax(min(100%, 250px), 1fr)
+        );
+        gap: clamp(0.5rem, 1.5vw, 1rem);
+      }
+
+      img,
+      .image-container {
+        max-width: 100%;
+        max-height: min(50vh, 400px);
+        object-fit: contain;
+      }
+
+      @media (max-height: 700px) {
+        :root {
+          --slide-padding: clamp(0.75rem, 3vw, 2rem);
+          --content-gap: clamp(0.4rem, 1.5vw, 1rem);
+          --title-size: clamp(1.25rem, 4.5vw, 2.5rem);
+          --h2-size: clamp(1rem, 3vw, 1.75rem);
+        }
+      }
+
+      @media (max-height: 600px) {
+        :root {
+          --slide-padding: clamp(0.5rem, 2.5vw, 1.5rem);
+          --content-gap: clamp(0.3rem, 1vw, 0.75rem);
+          --title-size: clamp(1.1rem, 4vw, 2rem);
+          --body-size: clamp(0.7rem, 1.2vw, 0.95rem);
+        }
+        .nav-dots,
+        .keyboard-hint,
+        .decorative {
+          display: none;
+        }
+      }
+
+      @media (max-height: 500px) {
+        :root {
+          --slide-padding: clamp(0.4rem, 2vw, 1rem);
+          --title-size: clamp(1rem, 3.5vw, 1.5rem);
+          --h2-size: clamp(0.9rem, 2.5vw, 1.25rem);
+          --body-size: clamp(0.65rem, 1vw, 0.85rem);
+        }
+      }
+
+      @media (max-width: 600px) {
+        :root {
+          --title-size: clamp(1.25rem, 7vw, 2.5rem);
+        }
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.01ms !important;
+          transition-duration: 0.2s !important;
+        }
+        html {
+          scroll-behavior: auto;
+        }
+      }
+
+      /* ===========================================
+         GLOBAL STYLES
+         =========================================== */
+      body {
+        font-family: var(--font-body);
+        background: var(--bg-primary);
+        color: var(--text-primary);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      h1,
+      h2,
+      h3 {
+        font-family: var(--font-display);
+        font-weight: 600;
+        line-height: 1.1;
+      }
+
+      /* ===========================================
+         ANIMATIONS
+         =========================================== */
+      .reveal {
+        opacity: 0;
+        transform: translateY(28px);
+        transition:
+          opacity var(--duration-normal) var(--ease-out-expo),
+          transform var(--duration-normal) var(--ease-out-expo);
+      }
+
+      .slide.visible .reveal {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .reveal:nth-child(1) { transition-delay: 0.05s; }
+      .reveal:nth-child(2) { transition-delay: 0.15s; }
+      .reveal:nth-child(3) { transition-delay: 0.25s; }
+      .reveal:nth-child(4) { transition-delay: 0.35s; }
+      .reveal:nth-child(5) { transition-delay: 0.45s; }
+      .reveal:nth-child(6) { transition-delay: 0.55s; }
+
+      .reveal-scale {
+        opacity: 0;
+        transform: scale(0.92);
+        transition:
+          opacity 0.7s var(--ease-out-expo),
+          transform 0.7s var(--ease-out-expo);
+      }
+
+      .slide.visible .reveal-scale {
+        opacity: 1;
+        transform: scale(1);
+      }
+
+      /* ===========================================
+         PROGRESS BAR
+         =========================================== */
+      .progress-bar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        height: 3px;
+        background: linear-gradient(90deg, var(--accent), var(--accent-secondary));
+        z-index: 1000;
+        transition: width 0.3s ease;
+        box-shadow: 0 0 12px var(--accent-glow);
+      }
+
+      /* ===========================================
+         NAVIGATION DOTS
+         =========================================== */
+      .nav-dots {
+        position: fixed;
+        right: clamp(0.75rem, 2vw, 1.5rem);
+        top: 50%;
+        transform: translateY(-50%);
+        display: flex;
+        flex-direction: column;
+        gap: clamp(6px, 1vh, 10px);
+        z-index: 999;
+      }
+
+      .nav-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        border: 1.5px solid var(--text-secondary);
+        background: transparent;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        padding: 0;
+      }
+
+      .nav-dot.active {
+        background: var(--accent);
+        border-color: var(--accent);
+        box-shadow: 0 0 10px var(--accent-glow);
+        transform: scale(1.3);
+      }
+
+      .nav-dot:hover {
+        border-color: var(--accent);
+      }
+
+      /* ===========================================
+         SHARED GRID / BACKGROUND PATTERNS
+         =========================================== */
+      .grid-bg::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background-image: linear-gradient(
+            rgba(74, 158, 255, 0.04) 1px,
+            transparent 1px
+          ),
+          linear-gradient(
+            90deg,
+            rgba(74, 158, 255, 0.04) 1px,
+            transparent 1px
+          );
+        background-size: 60px 60px;
+        pointer-events: none;
+      }
+
+      .gradient-mesh {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+
+      /* ===========================================
+         HEARTBEAT PULSE ANIMATION (Canvas)
+         =========================================== */
+      .heartbeat-container {
+        position: absolute;
+        bottom: 10%;
+        left: 0;
+        width: 100%;
+        height: clamp(80px, 15vh, 160px);
+        z-index: 0;
+        pointer-events: none;
+      }
+
+      .heartbeat-container canvas {
+        width: 100%;
+        height: 100%;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .heartbeat-container { display: none; }
+      }
+
+      /* ===========================================
+         SLIDE 1: TITLE — INTRODUCTION & PROBLEM
+         =========================================== */
+      .slide-title {
+        background: var(--bg-primary);
+      }
+
+      .slide-title .gradient-mesh {
+        background: radial-gradient(
+              ellipse at 15% 85%,
+              rgba(74, 158, 255, 0.12) 0%,
+              transparent 55%
+            ),
+            radial-gradient(
+              ellipse at 85% 15%,
+              rgba(108, 180, 255, 0.1) 0%,
+              transparent 55%
+            ),
+            radial-gradient(
+              ellipse at 50% 50%,
+              rgba(74, 158, 255, 0.04) 0%,
+              transparent 70%
+            );
+      }
+
+      .title-split {
+        display: grid;
+        grid-template-columns: 1fr 1.2fr;
+        gap: clamp(1.5rem, 3vw, 3rem);
+        align-items: center;
+        z-index: 1;
+        height: 100%;
+      }
+
+      @media (max-width: 800px) {
+        .title-split {
+          grid-template-columns: 1fr;
+          text-align: center;
+        }
+        .title-inner { align-items: center; }
+        .dashboard-preview { display: none; }
+      }
+
+      .title-inner {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: clamp(0.75rem, 2vh, 1.5rem);
+        z-index: 1;
+      }
+
+      .dashboard-preview {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 1;
+      }
+
+      .dashboard-preview img {
+        width: 100%;
+        max-height: min(70vh, 520px);
+        object-fit: contain;
+        border-radius: 12px;
+        border: 1px solid rgba(74, 158, 255, 0.2);
+        box-shadow:
+          0 0 50px rgba(74, 158, 255, 0.1),
+          0 20px 60px rgba(0, 0, 0, 0.5);
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4em;
+        padding: clamp(0.25rem, 0.5vw, 0.4rem) clamp(0.6rem, 1.2vw, 1rem);
+        border: 1px solid rgba(74, 158, 255, 0.3);
+        border-radius: 100px;
+        font-size: var(--label-size);
+        font-weight: 500;
+        color: var(--accent);
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        background: rgba(74, 158, 255, 0.08);
+      }
+
+      .badge::before {
+        content: "";
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 8px var(--accent-glow);
+        animation: pulse-dot 2s ease-in-out infinite;
+      }
+
+      @keyframes pulse-dot {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.5; transform: scale(0.7); }
+      }
+
+      .title-main {
+        font-size: var(--title-size);
+        font-weight: 700;
+        background: linear-gradient(135deg, var(--text-primary) 40%, var(--accent) 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        max-width: 14ch;
+      }
+
+      .title-tagline {
+        font-size: var(--subtitle-size);
+        color: var(--text-secondary);
+        max-width: 50ch;
+        line-height: 1.5;
+      }
+
+      .title-meta {
+        display: flex;
+        flex-direction: column;
+        gap: clamp(0.15rem, 0.4vh, 0.3rem);
+        margin-top: clamp(0.25rem, 0.5vh, 0.5rem);
+      }
+
+      .meta-team {
+        font-family: var(--font-display);
+        font-size: var(--body-size);
+        font-weight: 600;
+        color: var(--accent);
+      }
+
+      .meta-members {
+        font-size: var(--small-size);
+        color: var(--text-secondary);
+        letter-spacing: 0.02em;
+      }
+
+      /* ===========================================
+         SLIDE 2: PROBLEM & SOLUTION
+         =========================================== */
+      .slide-problem {
+        background: var(--bg-primary);
+      }
+
+      .slide-problem .gradient-mesh {
+        background: radial-gradient(
+          ellipse at 80% 80%,
+          rgba(248, 113, 113, 0.07) 0%,
+          transparent 50%
+        ),
+        radial-gradient(
+          ellipse at 20% 20%,
+          rgba(74, 158, 255, 0.08) 0%,
+          transparent 50%
+        );
+      }
+
+      .split-layout {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: clamp(1.5rem, 3vw, 3rem);
+        align-items: start;
+        z-index: 1;
+      }
+
+      @media (max-width: 800px) {
+        .split-layout {
+          grid-template-columns: 1fr;
+          gap: clamp(1rem, 2vw, 1.5rem);
+        }
+      }
+
+      .section-label {
+        display: inline-block;
+        font-size: var(--label-size);
+        font-weight: 700;
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+        padding-bottom: clamp(0.3rem, 0.5vh, 0.5rem);
+        margin-bottom: clamp(0.3rem, 0.5vh, 0.5rem);
+        border-bottom: 2px solid;
+      }
+
+      .section-label.problem {
+        color: var(--accent-danger);
+        border-color: var(--accent-danger);
+      }
+
+      .section-label.solution {
+        color: var(--accent);
+        border-color: var(--accent);
+      }
+
+      .panel-title {
+        font-size: var(--h3-size);
+        font-weight: 600;
+        margin-bottom: clamp(0.5rem, 1vh, 0.75rem);
+      }
+
+      .pain-list {
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: clamp(0.35rem, 0.8vh, 0.6rem);
+      }
+
+      .pain-list li {
+        font-size: var(--body-size);
+        color: var(--text-secondary);
+        line-height: 1.45;
+        padding-left: 1.4em;
+        position: relative;
+      }
+
+      .pain-list li::before {
+        position: absolute;
+        left: 0;
+        top: 0.15em;
+        font-size: 0.85em;
+      }
+
+      .pain-list.problems li::before {
+        content: "\2716";
+        color: var(--accent-danger);
+      }
+
+      .pain-list.solutions li::before {
+        content: "\2714";
+        color: var(--accent);
+      }
+
+      .target-users {
+        margin-top: clamp(0.4rem, 1vh, 0.75rem);
+        padding: clamp(0.5rem, 1vw, 0.75rem);
+        background: rgba(74, 158, 255, 0.08);
+        border: 1px solid rgba(74, 158, 255, 0.2);
+        border-radius: 8px;
+        font-size: var(--small-size);
+        color: var(--text-secondary);
+        line-height: 1.4;
+      }
+
+      .target-users strong {
+        color: var(--accent);
+      }
+
+      /* ===========================================
+         SLIDE 3: DEMO VIDEO
+         =========================================== */
+      .slide-demo {
+        background: var(--bg-primary);
+        align-items: center;
+        justify-content: center;
+      }
+
+      .slide-demo .gradient-mesh {
+        background: radial-gradient(
+          ellipse at 50% 60%,
+          rgba(74, 158, 255, 0.1) 0%,
+          transparent 60%
+        );
+      }
+
+      .demo-inner {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 1;
+        width: 100%;
+        height: 100%;
+      }
+
+      .video-wrapper {
+        position: relative;
+        width: min(96vw, 1400px);
+        max-height: 90vh;
+        aspect-ratio: 16 / 9;
+        border-radius: 12px;
+        overflow: hidden;
+        border: 1px solid rgba(74, 158, 255, 0.2);
+        box-shadow:
+          0 0 40px rgba(74, 158, 255, 0.1),
+          0 20px 60px rgba(0, 0, 0, 0.4);
+        background: var(--bg-secondary);
+      }
+
+      .video-wrapper video {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+
+      .video-placeholder {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: clamp(0.5rem, 1vh, 1rem);
+        background: linear-gradient(
+          135deg,
+          var(--bg-secondary) 0%,
+          rgba(74, 158, 255, 0.06) 100%
+        );
+      }
+
+      .play-icon {
+        width: clamp(48px, 6vw, 80px);
+        height: clamp(48px, 6vw, 80px);
+        border-radius: 50%;
+        border: 2px solid var(--accent);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        background: rgba(74, 158, 255, 0.1);
+      }
+
+      .play-icon:hover {
+        background: rgba(74, 158, 255, 0.2);
+        box-shadow: 0 0 30px var(--accent-glow);
+        transform: scale(1.08);
+      }
+
+      .play-icon svg {
+        width: clamp(20px, 2.5vw, 32px);
+        height: clamp(20px, 2.5vw, 32px);
+        fill: var(--accent);
+        margin-left: 3px;
+      }
+
+      .video-placeholder span {
+        font-size: var(--small-size);
+        color: var(--text-secondary);
+        letter-spacing: 0.05em;
+      }
+
+      /* ===========================================
+         SLIDE 4: FUTURE ROADMAP
+         =========================================== */
+      .slide-roadmap {
+        background: var(--bg-primary);
+      }
+
+      .slide-roadmap .gradient-mesh {
+        background: radial-gradient(
+          ellipse at 70% 80%,
+          rgba(74, 158, 255, 0.1) 0%,
+          transparent 50%
+        ),
+        radial-gradient(
+          ellipse at 30% 20%,
+          rgba(108, 180, 255, 0.08) 0%,
+          transparent 50%
+        );
+      }
+
+      .roadmap-inner {
+        z-index: 1;
+        display: flex;
+        flex-direction: column;
+        gap: clamp(1rem, 2.5vh, 2rem);
+      }
+
+      .roadmap-title {
+        font-size: var(--h2-size);
+        font-weight: 600;
+      }
+
+      .roadmap-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: clamp(0.75rem, 1.5vw, 1.5rem);
+      }
+
+      @media (max-width: 800px) {
+        .roadmap-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .roadmap-card {
+        background: var(--bg-card);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 12px;
+        padding: clamp(1rem, 2vw, 1.5rem);
+        display: flex;
+        flex-direction: column;
+        gap: clamp(0.4rem, 0.8vh, 0.75rem);
+        transition: border-color 0.3s ease, box-shadow 0.3s ease;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .roadmap-card::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 3px;
+        border-radius: 12px 12px 0 0;
+      }
+
+      .roadmap-card:nth-child(1)::before { background: var(--accent); }
+      .roadmap-card:nth-child(2)::before { background: var(--accent-secondary); }
+      .roadmap-card:nth-child(3)::before { background: var(--accent-warn); }
+
+      .roadmap-card:hover {
+        border-color: rgba(255, 255, 255, 0.12);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+      }
+
+      .roadmap-phase {
+        font-size: var(--label-size);
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .roadmap-card:nth-child(1) .roadmap-phase { color: var(--accent); }
+      .roadmap-card:nth-child(2) .roadmap-phase { color: var(--accent-secondary); }
+      .roadmap-card:nth-child(3) .roadmap-phase { color: var(--accent-warn); }
+
+      .roadmap-card h3 {
+        font-size: var(--h3-size);
+        font-weight: 600;
+      }
+
+      .roadmap-card p {
+        font-size: var(--body-size);
+        color: var(--text-secondary);
+        line-height: 1.5;
+      }
+
+      .roadmap-icon {
+        font-size: clamp(1.5rem, 2.5vw, 2rem);
+        margin-bottom: clamp(0.1rem, 0.3vh, 0.25rem);
+      }
+
+      /* ===========================================
+         KEYBOARD HINT
+         =========================================== */
+      .keyboard-hint {
+        position: fixed;
+        bottom: clamp(0.75rem, 2vh, 1.5rem);
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: var(--small-size);
+        color: var(--text-secondary);
+        opacity: 0.5;
+        z-index: 998;
+        display: flex;
+        align-items: center;
+        gap: 0.5em;
+        pointer-events: none;
+      }
+
+      .keyboard-hint kbd {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0.15em 0.5em;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 4px;
+        font-family: var(--font-body);
+        font-size: 0.85em;
+        background: rgba(255, 255, 255, 0.05);
+      }
+    </style>
+  </head>
+
+  <body>
+    <!-- Progress Bar -->
+    <div class="progress-bar" id="progressBar"></div>
+
+    <!-- Navigation Dots -->
+    <nav class="nav-dots" id="navDots" aria-label="Slide navigation"></nav>
+
+    <!-- Keyboard Hint -->
+    <div class="keyboard-hint decorative">
+      <kbd>&uarr;</kbd><kbd>&darr;</kbd> or <kbd>Space</kbd> to navigate
+    </div>
+
+    <!-- =============================================
+         SLIDE 1: INTRODUCTION & PROBLEM STATEMENT
+         ============================================= -->
+    <section class="slide slide-title grid-bg" aria-label="Title slide">
+      <div class="gradient-mesh"></div>
+
+      <!-- Heartbeat Pulse Animation -->
+      <div class="heartbeat-container" aria-hidden="true">
+        <canvas id="heartbeatCanvas"></canvas>
+      </div>
+
+      <div class="slide-content">
+        <div class="title-split">
+          <div class="title-inner">
+            <div class="badge reveal">Outage Monitoring</div>
+            <h1 class="title-main reveal">StatusSphere</h1>
+            <p class="title-tagline reveal">
+              Consolidated visibility into service outages across major
+              financial institutions and cloud service providers.
+            </p>
+            <div class="title-meta reveal">
+              <span class="meta-team">Team: Heartbeat Hunters</span>
+              <span class="meta-members">Charles Lim, Bruce Wang, Jensen Lim, Aman Singhal — TCRD</span>
+            </div>
+          </div>
+          <div class="dashboard-preview reveal-scale">
+            <img src="assets/dashboard-screenshot.png" alt="StatusSphere dashboard showing real-time bank and cloud provider status monitoring" />
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =============================================
+         SLIDE 2: PROBLEM & SOLUTION + VALUE IMPACT
+         ============================================= -->
+    <section class="slide slide-problem grid-bg" aria-label="Problem and Solution">
+      <div class="gradient-mesh"></div>
+      <div class="slide-content">
+        <div class="split-layout">
+          <!-- Problem Panel -->
+          <div class="reveal">
+            <span class="section-label problem">The Problem</span>
+            <h2 class="panel-title">Fragmented Manual Monitoring</h2>
+            <ul class="pain-list problems">
+              <li>Supervisors check individual bank websites every minute during incidents</li>
+              <li>No centralized dashboard for 1-2 monthly outage incidents</li>
+              <li>Cannot quickly determine which banks are affected during CSP outages</li>
+              <li>Delayed situational awareness hampers regulatory response</li>
+            </ul>
+            <div class="target-users">
+              <strong>Users:</strong> TCRD &amp; FSG officers (primary), TG &amp; Senior Management (situational awareness)
+            </div>
+          </div>
+
+          <!-- Solution Panel -->
+          <div class="reveal">
+            <span class="section-label solution">The Solution</span>
+            <h2 class="panel-title">StatusSphere Dashboard</h2>
+            <ul class="pain-list solutions">
+              <li>Automated aggregation of service status from multiple banks</li>
+              <li>Real-time outage information, recovery progress, and news</li>
+              <li>Faster and more accurate outage detection</li>
+              <li>Consolidated situational awareness in a single interface</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =============================================
+         SLIDE 3: DEMO VIDEO
+         ============================================= -->
+    <section class="slide slide-demo grid-bg" aria-label="Demo video">
+      <div class="gradient-mesh"></div>
+      <div class="slide-content">
+        <div class="demo-inner">
+          <div class="video-wrapper reveal-scale">
+            <iframe
+              src="https://drive.google.com/file/d/12PFLAx5htvA23_lycfB1t79oNvr3XAcl/preview"
+              width="100%"
+              height="100%"
+              allow="autoplay; encrypted-media"
+              allowfullscreen
+              frameborder="0"
+              style="position: absolute; inset: 0; width: 100%; height: 100%;"
+            ></iframe>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =============================================
+         SLIDE 4: FUTURE ROADMAP
+         ============================================= -->
+    <section class="slide slide-roadmap grid-bg" aria-label="Future roadmap">
+      <div class="gradient-mesh"></div>
+      <div class="slide-content">
+        <div class="roadmap-inner">
+          <h2 class="roadmap-title reveal">Future Roadmap</h2>
+          <div class="roadmap-grid">
+            <div class="roadmap-card reveal">
+              <div class="roadmap-icon">&#x1F310;</div>
+              <span class="roadmap-phase">Phase 1</span>
+              <h3>Expanded Coverage</h3>
+              <p>
+                Include more Financial Institutions and critical service
+                providers for broader sector-wide visibility.
+              </p>
+            </div>
+            <div class="roadmap-card reveal">
+              <div class="roadmap-icon">&#x1F514;</div>
+              <span class="roadmap-phase">Phase 2</span>
+              <h3>Automated Alerting</h3>
+              <p>
+                Real-time reporting and notifications via Telegram, WhatsApp,
+                and other messaging channels.
+              </p>
+            </div>
+            <div class="roadmap-card reveal">
+              <div class="roadmap-icon">&#x1F4CA;</div>
+              <span class="roadmap-phase">Phase 3</span>
+              <h3>Trend Analytics</h3>
+              <p>
+                Historical outage trends, performance analytics, and
+                predictive insights for proactive supervision.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <script>
+      /* ===========================================
+         SLIDE PRESENTATION CONTROLLER
+         =========================================== */
+      class SlidePresentation {
+        constructor() {
+          this.slides = document.querySelectorAll(".slide");
+          this.currentSlide = 0;
+          this.isScrolling = false;
+          this.navDotsContainer = document.getElementById("navDots");
+          this.progressBar = document.getElementById("progressBar");
+
+          this.setupIntersectionObserver();
+          this.setupKeyboardNav();
+          this.setupTouchNav();
+          this.setupWheelNav();
+          this.setupProgressBar();
+          this.setupNavDots();
+
+          this.slides[0].classList.add("visible");
+        }
+
+        setupIntersectionObserver() {
+          const observer = new IntersectionObserver(
+            (entries) => {
+              entries.forEach((entry) => {
+                if (entry.isIntersecting) {
+                  entry.target.classList.add("visible");
+                  const idx = Array.from(this.slides).indexOf(entry.target);
+                  this.currentSlide = idx;
+                  this.updateNavDots();
+                  this.updateProgressBar();
+                }
+              });
+            },
+            { threshold: 0.5 }
+          );
+
+          this.slides.forEach((slide) => observer.observe(slide));
+        }
+
+        goTo(index) {
+          if (index < 0 || index >= this.slides.length) return;
+          this.currentSlide = index;
+          this.slides[index].scrollIntoView({ behavior: "smooth" });
+        }
+
+        next() {
+          this.goTo(this.currentSlide + 1);
+        }
+
+        prev() {
+          this.goTo(this.currentSlide - 1);
+        }
+
+        setupKeyboardNav() {
+          document.addEventListener("keydown", (e) => {
+            switch (e.key) {
+              case "ArrowDown":
+              case "ArrowRight":
+              case " ":
+              case "PageDown":
+                e.preventDefault();
+                this.next();
+                break;
+              case "ArrowUp":
+              case "ArrowLeft":
+              case "PageUp":
+                e.preventDefault();
+                this.prev();
+                break;
+              case "Home":
+                e.preventDefault();
+                this.goTo(0);
+                break;
+              case "End":
+                e.preventDefault();
+                this.goTo(this.slides.length - 1);
+                break;
+            }
+          });
+        }
+
+        setupTouchNav() {
+          let startY = 0;
+          document.addEventListener("touchstart", (e) => {
+            startY = e.touches[0].clientY;
+          }, { passive: true });
+
+          document.addEventListener("touchend", (e) => {
+            const diff = startY - e.changedTouches[0].clientY;
+            if (Math.abs(diff) > 50) {
+              diff > 0 ? this.next() : this.prev();
+            }
+          }, { passive: true });
+        }
+
+        setupWheelNav() {
+          let timeout;
+          document.addEventListener("wheel", (e) => {
+            if (this.isScrolling) return;
+            this.isScrolling = true;
+            clearTimeout(timeout);
+
+            if (e.deltaY > 30) this.next();
+            else if (e.deltaY < -30) this.prev();
+
+            timeout = setTimeout(() => {
+              this.isScrolling = false;
+            }, 800);
+          }, { passive: true });
+        }
+
+        setupProgressBar() {
+          this.updateProgressBar();
+        }
+
+        updateProgressBar() {
+          const pct = ((this.currentSlide + 1) / this.slides.length) * 100;
+          this.progressBar.style.width = pct + "%";
+        }
+
+        setupNavDots() {
+          this.navDotsContainer.innerHTML = "";
+          this.slides.forEach((_, i) => {
+            const dot = document.createElement("button");
+            dot.className = "nav-dot" + (i === 0 ? " active" : "");
+            dot.setAttribute("aria-label", "Go to slide " + (i + 1));
+            dot.addEventListener("click", () => this.goTo(i));
+            this.navDotsContainer.appendChild(dot);
+          });
+        }
+
+        updateNavDots() {
+          const dots = this.navDotsContainer.querySelectorAll(".nav-dot");
+          dots.forEach((dot, i) => {
+            dot.classList.toggle("active", i === this.currentSlide);
+          });
+        }
+      }
+
+      const presentation = new SlidePresentation();
+
+      /* ===========================================
+         HEARTBEAT CANVAS ANIMATION
+         =========================================== */
+      (function () {
+        const canvas = document.getElementById("heartbeatCanvas");
+        if (!canvas || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+        const ctx = canvas.getContext("2d");
+
+        function resize() {
+          const rect = canvas.parentElement.getBoundingClientRect();
+          canvas.width = rect.width * devicePixelRatio;
+          canvas.height = rect.height * devicePixelRatio;
+          ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+        }
+        resize();
+        window.addEventListener("resize", resize);
+
+        const w = () => canvas.width / devicePixelRatio;
+        const h = () => canvas.height / devicePixelRatio;
+
+        function ecgY(t, midY, amp) {
+          /* t in 0..1 across one cycle; returns y offset */
+          if (t < 0.30 || t > 0.55) return midY;
+          const s = (t - 0.30) / 0.25;
+          if (s < 0.12) return midY;
+          if (s < 0.22) return midY - amp * 0.25 * ((s - 0.12) / 0.10);
+          if (s < 0.32) return midY + amp * 0.15 * ((s - 0.22) / 0.10);
+          if (s < 0.42) return midY - amp * 1.0 * ((s - 0.32) / 0.10);
+          if (s < 0.52) return midY + amp * 0.8 * ((s - 0.42) / 0.10);
+          if (s < 0.62) return midY - amp * 0.35 * ((s - 0.52) / 0.10);
+          if (s < 0.72) return midY + amp * 0.10 * ((s - 0.62) / 0.10);
+          if (s < 0.82) return midY - amp * 0.05;
+          if (s < 0.90) return midY + amp * 0.15 * ((s - 0.82) / 0.08);
+          return midY + amp * 0.15 * (1 - (s - 0.90) / 0.10);
+        }
+
+        let phase = 0;
+        const SPEED = 1.0;
+
+        function draw(now) {
+          const W = w(), H = h();
+          const midY = H * 0.5;
+          const amp = H * 0.42;
+          phase = (now / 1000 * SPEED) % 1;
+
+          ctx.clearRect(0, 0, W, H);
+
+          /* dim static baseline */
+          ctx.beginPath();
+          ctx.moveTo(0, midY);
+          const steps = Math.ceil(W / 2);
+          for (let i = 0; i <= steps; i++) {
+            const x = (i / steps) * W;
+            const t = (i / steps);
+            ctx.lineTo(x, ecgY(t, midY, amp));
+          }
+          ctx.strokeStyle = "rgba(74, 158, 255, 0.08)";
+          ctx.lineWidth = 2;
+          ctx.stroke();
+
+          /* bright sweep — draws only the portion behind the "cursor" */
+          const cursorX = phase * W;
+          const trailLen = W * 0.35;
+
+          ctx.beginPath();
+          let started = false;
+          for (let i = 0; i <= steps; i++) {
+            const x = (i / steps) * W;
+            const t = (i / steps);
+            const dist = cursorX - x;
+            if (dist < 0 || dist > trailLen) continue;
+            const y = ecgY(t, midY, amp);
+            if (!started) { ctx.moveTo(x, y); started = true; }
+            else ctx.lineTo(x, y);
+          }
+          const grad = ctx.createLinearGradient(cursorX - trailLen, 0, cursorX, 0);
+          grad.addColorStop(0, "rgba(74, 158, 255, 0)");
+          grad.addColorStop(0.7, "rgba(74, 158, 255, 0.5)");
+          grad.addColorStop(1, "rgba(74, 158, 255, 1)");
+          ctx.strokeStyle = grad;
+          ctx.lineWidth = 2.5;
+          ctx.lineJoin = "round";
+          ctx.lineCap = "round";
+          ctx.stroke();
+
+          /* glow layer */
+          ctx.beginPath();
+          started = false;
+          for (let i = 0; i <= steps; i++) {
+            const x = (i / steps) * W;
+            const t = (i / steps);
+            const dist = cursorX - x;
+            if (dist < 0 || dist > trailLen) continue;
+            const y = ecgY(t, midY, amp);
+            if (!started) { ctx.moveTo(x, y); started = true; }
+            else ctx.lineTo(x, y);
+          }
+          ctx.strokeStyle = "rgba(74, 158, 255, 0.25)";
+          ctx.lineWidth = 8;
+          ctx.stroke();
+
+          /* leading dot */
+          const dotT = phase;
+          const dotY = ecgY(dotT, midY, amp);
+          ctx.beginPath();
+          ctx.arc(cursorX, dotY, 5, 0, Math.PI * 2);
+          ctx.fillStyle = "#4a9eff";
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(cursorX, dotY, 12, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(74, 158, 255, 0.15)";
+          ctx.fill();
+
+          requestAnimationFrame(draw);
+        }
+
+        requestAnimationFrame(draw);
+      })();
+    </script>
+  </body>
+</html>
